@@ -439,7 +439,8 @@ ZpqStream*
 zpq_create(int algorithm_impl, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
 	ZpqStream* stream = zpq_algorithms[algorithm_impl].create(tx_func, rx_func, arg, rx_data, rx_data_size);
-	stream->algorithm = &zpq_algorithms[algorithm_impl];
+	if (stream)
+		stream->algorithm = &zpq_algorithms[algorithm_impl];
 	return stream;
 }
 
