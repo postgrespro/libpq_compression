@@ -3438,7 +3438,7 @@ CompressionAck (B)
   If server supports one of this algorithms, then it responds with CompressionAck with identifier (letter) of first such algorithm.
   If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression) algorithm.
   It is up to the client whether to continue work without compression or report error.
-  After receiving this message with algorithm identifer aother than 'n', both server and client are switched to compression mode
+  After receiving this message with algorithm identifier other than 'n', both server and client are switched to compression mode
   and exchange compressed messages.
 </para>
 </listitem>

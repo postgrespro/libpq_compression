@@ -15,8 +15,8 @@ typedef struct
 
 	/*
 	 * Create compression stream with using rx/tx function for fetching/sending compressed data.
-	 * tx_func: function foir writing compressed data in underlying stream
-	 * rx_func: function for receiving compressed daat from underying stream
+	 * tx_func: function for writing compressed data in underlying stream
+	 * rx_func: function for receiving compressed data from underlying stream
 	 * arg: context passed to the function
      * rx_data: received data (compressed data already fetched from input stream)
 	 * rx_data_size: size of data fetched from input stream
@@ -53,6 +53,10 @@ typedef struct
 	size_t  (*buffered)(ZpqStream *zs);
 } ZpqAlgorithm;
 
+struct ZpqStream
+{
+	ZpqAlgorithm const* algorithm;
+};
 
 #if HAVE_LIBZSTD
 
@@ -64,6 +68,7 @@ typedef struct
 
 typedef struct ZstdStream
 {
+	ZpqStream      common;
 	ZSTD_CStream*  tx_stream;
 	ZSTD_DStream*  rx_stream;
 	ZSTD_outBuffer tx;
@@ -244,6 +249,8 @@ zstd_name(void)
 
 typedef struct ZlibStream
 {
+	ZpqStream      common;
+
 	z_stream tx;
 	z_stream rx;
 
@@ -428,45 +435,44 @@ static ZpqAlgorithm const zpq_algorithms[] =
 /*
  * Index of used compression algorithm in zpq_algorithms array.
  */
-static int zpq_algorithm_impl;
-
-
 ZpqStream*
-zpq_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
+zpq_create(int algorithm_impl, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
-	return zpq_algorithms[zpq_algorithm_impl].create(tx_func, rx_func, arg, rx_data, rx_data_size);
+	ZpqStream* stream = zpq_algorithms[algorithm_impl].create(tx_func, rx_func, arg, rx_data, rx_data_size);
+	stream->algorithm = &zpq_algorithms[algorithm_impl];
+	return stream;
 }
 
 ssize_t
 zpq_read(ZpqStream *zs, void *buf, size_t size)
 {
-	return zpq_algorithms[zpq_algorithm_impl].read(zs, buf, size);
+	return zs->algorithm->read(zs, buf, size);
 }
 
 ssize_t
 zpq_write(ZpqStream *zs, void const *buf, size_t size, size_t* processed)
 {
-	return zpq_algorithms[zpq_algorithm_impl].write(zs, buf, size, processed);
+	return zs->algorithm->write(zs, buf, size, processed);
 }
 
 void
 zpq_free(ZpqStream *zs)
 {
 	if (zs)
-		zpq_algorithms[zpq_algorithm_impl].free(zs);
+		zs->algorithm->free(zs);
 }
 
 char const*
 zpq_error(ZpqStream *zs)
 {
-	return zpq_algorithms[zpq_algorithm_impl].error(zs);
+	return zs->algorithm->error(zs);
 }
 
 
 size_t
 zpq_buffered(ZpqStream *zs)
 {
-	return zs ? zpq_algorithms[zpq_algorithm_impl].buffered(zs) : 0;
+	return zs ? zs->algorithm->buffered(zs) : 0;
 }
 
 /*
@@ -487,13 +493,14 @@ zpq_get_supported_algorithms(char algorithms[ZPQ_MAX_ALGORITHMS])
 	algorithms[i] = '\0';
 }
 
+
+
 /*
  * Choose current algorithm implementation.
- * Returns true if algorithm identifier is located in the list of the supported algorithms,
- * false otherwise
+ * Returns implementation number or -1 if algorithm with such name is not found
  */
-bool
-zpq_set_algorithm(char name)
+int
+zpq_get_algorithm_impl(char name)
 {
 	int i;
 	if (name != ZPQ_NO_COMPRESSION)
@@ -502,11 +509,9 @@ zpq_set_algorithm(char name)
 		{
 			if (zpq_algorithms[i].name() == name)
 			{
-				zpq_algorithm_impl = i;
-				return true;
+				return i;
 			}
 		}
 	}
-	return false;
+	return -1;
 }
-

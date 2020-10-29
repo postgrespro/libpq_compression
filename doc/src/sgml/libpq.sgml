@@ -1235,6 +1235,8 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         message and it is up to the client whether to continue work without compression or report error.
         Supported compression algorithms are chosen at configure time. Right now two libraries are supported: zlib (default) and zstd (if Postgres was
         configured with --with-zstd option). In both cases streaming mode is used.
+        By default compression is disabled. Please notice that using compression together with SSL may add extra vulnerabilities:
+        <ulink url="https://en.wikipedia.org/wiki/CRIME">CRIME</ulink>
       </para>
       </listitem>
      </varlistentry>

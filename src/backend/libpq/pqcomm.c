@@ -200,13 +200,14 @@ pq_configure(Port* port)
 	char* client_compression_algorithms = port->compression_algorithms;
 	/*
 	 * If client request compression, it sends list of supported compression algorithms.
-	 * Each compression algorirthm is idetified by one letter ('f' - Facebook zsts, 'z' - xlib)
+	 * Each compression algorithm is identified by one letter ('f' - Facebook zsts, 'z' - zlib)
 	 */
 	if (client_compression_algorithms)
 	{
 		char server_compression_algorithms[ZPQ_MAX_ALGORITHMS];
 		char compression_algorithm = ZPQ_NO_COMPRESSION;
 		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
+		int impl;
 		int rc;
 
 		/* Get list of compression algorithms, supported by server */
@@ -224,7 +225,7 @@ pq_configure(Port* port)
 		}
 
 		compression[5] = compression_algorithm;
-		/* Send 'z' message to the client with selected compression algorithm ('n' if match is ont found) */
+		/* Send 'z' message to the client with selected compression algorithm ('n' if match is not found) */
 		socket_set_nonblocking(false);
 		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
 			   && errno == EINTR);
@@ -232,8 +233,20 @@ pq_configure(Port* port)
 			return -1;
 
 		/* initialize compression */
-		if (zpq_set_algorithm(compression_algorithm))
-			PqStream = zpq_create((zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort, NULL, 0);
+		impl = zpq_get_algorithm_impl(compression_algorithm);
+		if (impl < 0)
+		{
+			ereport(LOG,
+					(errmsg("Requested algorithm %c is not supported", compression_algorithm)));
+			return -1;
+		}
+		PqStream = zpq_create(impl, (zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort, NULL, 0);
+		if (!PqStream)
+		{
+			ereport(LOG,
+					(errmsg("Failed to initialize compressor %c(%d)", compression_algorithm, impl)));
+			return -1;
+		}
 	}
 	return 0;
 }
@@ -1005,7 +1018,7 @@ pq_recvbuf(bool nowait)
 	/* Can fill buffer from PqRecvLength and upwards */
 	for (;;)
 	{
-		/* If srteaming compression is enabled then use correpondent comression read function. */
+		/* If streaming compression is enabled then use correspondent compression read function. */
 		r = PqStream
 			? zpq_read(PqStream, PqRecvBuffer + PqRecvLength,
 					   PQ_RECV_BUFFER_SIZE - PqRecvLength)
@@ -1455,7 +1468,8 @@ internal_flush(void)
 	char	   *bufptr = PqSendBuffer + PqSendStart;
 	char	   *bufend = PqSendBuffer + PqSendPointer;
 
-	while (bufptr < bufend || zpq_buffered(PqStream) != 0) /* has more data to flush or unsent data in internal compression buffer */
+	while (bufptr < bufend || zpq_buffered(PqStream) != 0)
+    /* has more data to flush or unsent data in internal compression buffer */
 	{
 		int		r;
 		size_t  processed = 0;

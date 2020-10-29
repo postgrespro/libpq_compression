@@ -3237,6 +3237,7 @@ keep_going:						/* We will come back to here until there is
 					if (beresp == 'z') /* Switch on compression */
 					{
 						char algorithm;
+						int impl;
 						/* Read message length word */
 						if (pqGetInt(&msgLength, 4, conn))
 						{
@@ -3247,21 +3248,28 @@ keep_going:						/* We will come back to here until there is
 						{
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "expected compression algorithm specification message length is 5 bytes, but %d is recevied\n"),
+												  "expected compression algorithm specification message length is 5 bytes, but %d is received\n"),
 											  msgLength);
 							goto error_return;
 						}
 						pqGetc(&algorithm, conn);
-						if (!zpq_set_algorithm(algorithm))
+						impl = zpq_get_algorithm_impl(algorithm);
 						{
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "server is not supported requested compression algorithm\n"));
+												  "server is not supported requested compression algorithm %c\n"), algorithm);
 							goto error_return;
 						}
 						Assert(!conn->zstream);
-						conn->zstream = zpq_create((zpq_tx_func)pqsecure_write, (zpq_rx_func)pqsecure_read, conn,
+						conn->zstream = zpq_create(impl, (zpq_tx_func)pqsecure_write, (zpq_rx_func)pqsecure_read, conn,
 												   &conn->inBuffer[conn->inCursor], conn->inEnd-conn->inCursor);
+						if (!conn->zstream)
+						{
+							appendPQExpBuffer(&conn->errorMessage,
+											  libpq_gettext(
+												  "failed to initialize compressor %c(%d)\n"), algorithm, impl);
+							goto error_return;
+						}
 						/* reset buffer */
 						conn->inStart = conn->inCursor = conn->inEnd = 0;
 					} else

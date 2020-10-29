@@ -2261,7 +2261,7 @@ build_startup_packet(const PGconn *conn, char *packet,
 	{
 		bool enabled;
 		/*
-		 * If compressoin is enabled, then send to the server list of compression algorithms
+		 * If compression is enabled, then send to the server list of compression algorithms
 		 * supported by client
 		 */
 		if (parse_bool(conn->compression, &enabled))
