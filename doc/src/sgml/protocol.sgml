@@ -98,7 +98,7 @@
     and for replication (both physical and logical). Also compression can reduce server response time
     in case of queries returning large amount of data (for example returning JSON, BLOBs, text,...)
     Right now two libraries are supported: zlib (default) and zstd (if Postgres was
-    configured with --with-zstd option). In both cases streaming mode is used.
+    configured with --with-zstd option).
   </para>
 
  <sect2 id="protocol-message-concepts">
