@@ -3254,7 +3254,7 @@ keep_going:						/* We will come back to here until there is
 						}
 						pqGetc(&algorithm, conn);
 						impl = zpq_get_algorithm_impl(algorithm);
-						{
+						if (impl < 0) {
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
 												  "server is not supported requested compression algorithm %c\n"), algorithm);
