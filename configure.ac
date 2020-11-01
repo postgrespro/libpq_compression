@@ -1003,7 +1003,7 @@ AC_SUBST(with_zlib)
 # Zstd
 #
 PGAC_ARG_BOOL(with, zstd, no,
-              [do not use zstd])
+              [use zstd])
 AC_SUBST(with_zstd)
 
 #
