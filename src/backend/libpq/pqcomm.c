@@ -1487,7 +1487,7 @@ internal_flush(void)
 	char	   *bufptr = PqSendBuffer + PqSendStart;
 	char	   *bufend = PqSendBuffer + PqSendPointer;
 
-	while (bufptr < bufend || zpq_buffered(PqStream) != 0)
+	while (bufptr < bufend || zpq_buffered_tx(PqStream) != 0)
     /* has more data to flush or unsent data in internal compression buffer */
 	{
 		int		r;
