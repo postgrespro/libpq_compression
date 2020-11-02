@@ -48,7 +48,7 @@ typedef struct
 	char const* (*error)(ZpqStream *zs);
 
 	/*
-	 * Returns amount of data in internal tx compression buffer.
+	 * Returns amount of data in internal tx decompression buffer.
 	 */
 	size_t  (*buffered_tx)(ZpqStream *zs);
 
