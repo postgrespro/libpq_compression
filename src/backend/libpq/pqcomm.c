@@ -71,6 +71,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <pgstat.h>
 #include <unistd.h>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -187,6 +188,23 @@ const PQcommMethods *PqCommMethods = &PqCommSocketMethods;
 
 WaitEventSet *FeBeWaitSet;
 
+static ssize_t write_compressed(void* arg, void const* data, size_t size)
+{
+	ssize_t rc = secure_write((Port*)arg, data, size);
+	if (rc > 0)
+		pgstat_report_network_traffic(0, 0, 0, rc);
+	return rc;
+}
+
+static ssize_t read_compressed(void* arg, void* data, size_t size)
+{
+	ssize_t rc = secure_read((Port*)arg, data, size);
+	if (rc > 0)
+		pgstat_report_network_traffic(0, 0, rc, 0);
+	return rc;
+}
+
+
 /* --------------------------------
  *		pq_configure - configure connection using port settings
  *
@@ -240,7 +258,7 @@ pq_configure(Port* port)
 					(errmsg("Requested algorithm %c is not supported", compression_algorithm)));
 			return -1;
 		}
-		PqStream = zpq_create(impl, (zpq_tx_func)secure_write, (zpq_rx_func)secure_read, MyProcPort, NULL, 0);
+		PqStream = zpq_create(impl, write_compressed, read_compressed, MyProcPort, NULL, 0);
 		if (!PqStream)
 		{
 			ereport(LOG,
@@ -1063,6 +1081,7 @@ pq_recvbuf(bool nowait)
 		}
 		/* r contains number of bytes read, so just incr length */
 		PqRecvLength += r;
+		pgstat_report_network_traffic(r, 0, 0, 0);
 		return r;
 	}
 }
@@ -1523,6 +1542,7 @@ internal_flush(void)
 			InterruptPending = 1;
 			return EOF;
 		}
+		pgstat_report_network_traffic(0, r, 0, 0);
 
 		last_reported_send_errno = 0;	/* reset after any successful send */
 		bufptr += r;

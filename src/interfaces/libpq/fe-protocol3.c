@@ -2270,6 +2270,12 @@ build_startup_packet(const PGconn *conn, char *packet,
 			zpq_get_supported_algorithms(compression_algorithms);
 			ADD_STARTUP_OPTION("compression", compression_algorithms);
 		}
+		else if (packet == NULL)
+		{
+			fprintf(stderr,
+				libpq_gettext("WARNING: invlaid value for compression option: '%s'\n"),
+					conn->compression);
+		}
 	}
 	if (conn->send_appname)
 	{
