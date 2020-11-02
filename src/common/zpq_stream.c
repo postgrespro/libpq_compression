@@ -48,9 +48,14 @@ typedef struct
 	char const* (*error)(ZpqStream *zs);
 
 	/*
-	 * Returns amount of data in internal compression buffer.
+	 * Returns amount of data in internal tx compression buffer.
 	 */
-	size_t  (*buffered)(ZpqStream *zs);
+	size_t  (*buffered_tx)(ZpqStream *zs);
+
+	/*
+	 * Returns amount of data in internal rx compression buffer.
+	 */
+	size_t  (*buffered_rx)(ZpqStream *zs);
 } ZpqAlgorithm;
 
 struct ZpqStream
@@ -225,10 +230,17 @@ zstd_error(ZpqStream *zstream)
 }
 
 static size_t
-zstd_buffered(ZpqStream *zstream)
+zstd_buffered_tx(ZpqStream *zstream)
 {
 	ZstdStream* zs = (ZstdStream*)zstream;
 	return zs != NULL ? zs->tx_buffered + zs->tx_not_flushed : 0;
+}
+
+static size_t
+zstd_buffered_rx(ZpqStream *zstream)
+{
+	ZstdStream* zs = (ZstdStream*)zstream;
+	return zs != NULL ? zs->rx.size - zs->rx.pos : 0;
 }
 
 static char
@@ -411,10 +423,17 @@ zlib_error(ZpqStream *zstream)
 }
 
 static size_t
-zlib_buffered(ZpqStream *zstream)
+zlib_buffered_tx(ZpqStream *zstream)
 {
 	ZlibStream* zs = (ZlibStream*)zstream;
 	return zs != NULL ? zs->tx_buffered : 0;
+}
+
+static size_t
+zlib_buffered_rx(ZpqStream *zstream)
+{
+	ZlibStream* zs = (ZlibStream*)zstream;
+	return zs != NULL ? zs->rx.avail_in : 0;
 }
 
 static char
@@ -431,10 +450,10 @@ zlib_name(void)
 static ZpqAlgorithm const zpq_algorithms[] =
 {
 #if HAVE_LIBZSTD
-	{zstd_name, zstd_create, zstd_read, zstd_write, zstd_free, zstd_error, zstd_buffered},
+	{zstd_name, zstd_create, zstd_read, zstd_write, zstd_free, zstd_error, zstd_buffered_tx, zstd_buffered_rx},
 #endif
 #if HAVE_LIBZ
-	{zlib_name, zlib_create, zlib_read, zlib_write, zlib_free, zlib_error, zlib_buffered},
+	{zlib_name, zlib_create, zlib_read, zlib_write, zlib_free, zlib_error, zlib_buffered_tx, zlib_buffered_rx},
 #endif
 	{NULL}
 };
@@ -478,9 +497,15 @@ zpq_error(ZpqStream *zs)
 
 
 size_t
-zpq_buffered(ZpqStream *zs)
+zpq_buffered_rx(ZpqStream *zs)
 {
-	return zs ? zs->algorithm->buffered(zs) : 0;
+	return zs ? zs->algorithm->buffered_rx(zs) : 0;
+}
+
+size_t
+zpq_buffered_tx(ZpqStream *zs)
+{
+	return zs ? zs->algorithm->buffered_tx(zs) : 0;
 }
 
 /*

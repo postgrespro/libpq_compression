@@ -190,7 +190,7 @@ WaitEventSet *FeBeWaitSet;
 
 static ssize_t write_compressed(void* arg, void const* data, size_t size)
 {
-	ssize_t rc = secure_write((Port*)arg, data, size);
+	ssize_t rc = secure_write((Port*)arg, (void*)data, size);
 	if (rc > 0)
 		pgstat_report_network_traffic(0, 0, 0, rc);
 	return rc;
@@ -1487,7 +1487,7 @@ internal_flush(void)
 	char	   *bufptr = PqSendBuffer + PqSendStart;
 	char	   *bufend = PqSendBuffer + PqSendPointer;
 
-	while (bufptr < bufend || zpq_buffered(PqStream) != 0)
+	while (bufptr < bufend || zpq_buffered_tx(PqStream) != 0)
     /* has more data to flush or unsent data in internal compression buffer */
 	{
 		int		r;
