@@ -79,7 +79,8 @@ typedef struct ZstdStream
 	ZSTD_outBuffer tx;
 	ZSTD_inBuffer  rx;
 	size_t         tx_not_flushed; /* Amount of data in internal zstd buffer */
-	size_t         tx_buffered;    /* Data which is consumed by ztd_read but not yet sent */
+	size_t         tx_buffered;    /* Data which is consumed by ztd_write but not yet sent */
+	size_t         rx_buffered;    /* Data which is needed for ztd_read */
 	zpq_tx_func    tx_func;
 	zpq_rx_func    rx_func;
 	void*          arg;
@@ -110,12 +111,12 @@ zstd_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, 
 	zs->rx_func = rx_func;
 	zs->tx_func = tx_func;
 	zs->tx_buffered = 0;
+	zs->rx_buffered = 0;
 	zs->tx_not_flushed = 0;
 	zs->rx_error = NULL;
 	zs->arg = arg;
 	zs->tx_total = zs->tx_total_raw = 0;
 	zs->rx_total = zs->rx_total_raw = 0;
-
 	zs->rx.size = rx_data_size;
 	Assert(rx_data_size < ZSTD_BUFFER_SIZE);
 	memcpy(zs->rx_buf, rx_data, rx_data_size);
@@ -135,21 +136,26 @@ zstd_read(ZpqStream *zstream, void *buf, size_t size)
 
 	while (1)
 	{
-		rc = ZSTD_decompressStream(zs->rx_stream, &out, &zs->rx);
-		if (ZSTD_isError(rc))
+		if (zs->rx.pos != zs->rx.size || zs->rx_buffered == 0)
 		{
-			zs->rx_error = ZSTD_getErrorName(rc);
-			return ZPQ_DECOMPRESS_ERROR;
-		}
-		/* Return result if we fill requested amount of bytes or read operation was performed */
-		if (out.pos != 0)
-		{
-			zs->rx_total_raw += out.pos;
-			return out.pos;
-		}
-		if (zs->rx.pos == zs->rx.size)
-		{
-			zs->rx.pos = zs->rx.size = 0; /* Reset rx buffer */
+			rc = ZSTD_decompressStream(zs->rx_stream, &out, &zs->rx);
+			if (ZSTD_isError(rc))
+			{
+				zs->rx_error = ZSTD_getErrorName(rc);
+				return ZPQ_DECOMPRESS_ERROR;
+			}
+			/* Return result if we fill requested amount of bytes or read operation was performed */
+			if (out.pos != 0)
+			{
+				zs->rx_total_raw += out.pos;
+				zs->rx_buffered = 0;
+				return out.pos;
+			}
+			zs->rx_buffered = rc;
+			if (zs->rx.pos == zs->rx.size)
+			{
+				zs->rx.pos = zs->rx.size = 0; /* Reset rx buffer */
+			}
 		}
 		rc = zs->rx_func(zs->arg, (char*)zs->rx.src + zs->rx.size, ZSTD_BUFFER_SIZE - zs->rx.size);
 		if (rc > 0) /* read fetches some data */
