@@ -252,7 +252,7 @@ zstd_buffered_rx(ZpqStream *zstream)
 static char const*
 zstd_name(void)
 {
-	return 'zstd';
+	return "zstd";
 }
 
 #endif
@@ -443,12 +443,12 @@ zlib_buffered_rx(ZpqStream *zstream)
 static char const*
 zlib_name(void)
 {
-	return 'zlib';
+	return "zlib";
 }
 
 #endif
 
-static  char const*
+static char const*
 no_compression_name(void)
 {
 	return NULL;
