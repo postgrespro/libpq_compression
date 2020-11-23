@@ -352,7 +352,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	offsetof(struct pg_conn, replication)},
 
 	{"compression", "COMPRESSION", NULL, NULL,
-	    "Libpq-compression", "", 1,
+	    "Libpq-compression", "", 16,
 	offsetof(struct pg_conn, compression)},
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
@@ -3242,8 +3242,7 @@ keep_going:						/* We will come back to here until there is
 
 					if (beresp == 'z') /* Switch on compression */
 					{
-						char algorithm;
-						int impl;
+						int index;
 						/* Read message length word */
 						if (pqGetInt(&msgLength, 4, conn))
 						{
@@ -3258,22 +3257,25 @@ keep_going:						/* We will come back to here until there is
 											  msgLength);
 							goto error_return;
 						}
-						pqGetc(&algorithm, conn);
-						impl = zpq_get_algorithm_impl(algorithm);
-						if (impl < 0) {
+						pqGetc(&index, conn);
+						if (index < 0)
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "server is not supported requested compression algorithm %c\n"), algorithm);
+												  "server is not supported requested compression algorithms %s\n"), conn->compression);
 							goto error_return;
 						}
 						Assert(!conn->zstream);
-						conn->zstream = zpq_create(impl, (zpq_tx_func)pqsecure_write, (zpq_rx_func)pqsecure_read, conn,
+						conn->zstream = zpq_create(conn->compressors[index].impl,
+												   conn->compressors[index].level,
+												   (zpq_tx_func)pqsecure_write, (zpq_rx_func)pqsecure_read, conn,
 												   &conn->inBuffer[conn->inCursor], conn->inEnd-conn->inCursor);
 						if (!conn->zstream)
 						{
+							char** supported_algorithms = zpq_get_supported_algorithms();
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "failed to initialize compressor %c(%d)\n"), algorithm, impl);
+												  "failed to initialize compressor %s\n"), zupported_algorirthms(conn->compressors[index].impl));
+							free(supported_algorithms);
 							goto error_return;
 						}
 						/* reset buffer */

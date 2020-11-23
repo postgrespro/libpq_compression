@@ -2211,6 +2211,135 @@ parse_bool(const char *value, bool *result)
 	return false;
 }
 
+static bool
+build_compressors_list(PGconn *conn, char** client_compressors, bool build_descriptors)
+{
+	char** supported_algorithms = zpq_get_supported_algorithms();
+	char* value = conn->compression;
+	int n_supported_algorithms = 0;
+	int total_len = 0;
+	int i;
+
+	for (n_supported_algorithms = 0; supported_algorithm[n_supported_algorithms] != NULL; n_supported_algorithms++)
+	{
+		total_len += strlen(supported_algorithm[n_supported_algorithms])+1;
+	}
+
+	if (pg_strcasecmp(value, "true") == 0 ||
+		pg_strcasecmp(value, "yes") == 0 ||
+		pg_strcasecmp(value, "on") == 0 ||
+		pg_strcasecmp(value, "any") == 0 ||
+		pg_strcasecmp(value, "1") == 0)
+	{
+		/* Compression is enabled: choose algorithm automatically */
+		char* p;
+
+		if (n_supported_algorithms == 0)
+		{
+			*client_compressors = NULL; /* no compressors are avaialable */
+			conn->compressors = NULL;
+			return true;
+		}
+		*client_compressors = p = malloc(total_len);
+		if (build_descriptors)
+			conn->compressors = malloc(n_supported_algorithms*sizeof(pg_conn_compressor));
+		for (i = 0; i < n_supported_algorithms; i++)
+		{
+			strcpy(p, supported_algorithm[i]);
+			p += strlen(p);
+			*p++ = ',';
+			if (build_descriptors)
+			{
+				conn->compressors[i].impl = i;
+				conn->compressors[i].level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
+			}
+		}
+		p[-1] = '\0';
+		return true;
+	}
+	else if (*value == 0 ||
+			 pg_strcasecmp(value, "false") == 0 ||
+			 pg_strcasecmp(value, "no") == 0 ||
+			 pg_strcasecmp(value, "off") == 0 ||
+			 pg_strcasecmp(value, "0") == 0)
+	{
+		/* Compression is disabled */
+		*client_compressors = NULL; /* no compressors are avaialable */
+		conn->compressors = NULL;
+		return true;
+	}
+	else
+	{
+		/* List of compresison algorithms separated by commas */
+		char* src, dst;
+		int n_suggested_algorithms = 0;
+
+		*client_compressors = src = dst = strdup(strlen(value));
+
+		if (build_descriptors)
+			conn->compressors = malloc(n_supported_algorithms*sizeof(pg_conn_compressor));
+
+		while (*src != '\0')
+		{
+			char* sep = strchr(src, ',');
+			char* col;
+			int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
+			int i;
+			if (sep != NULL)
+				sep = '\0';
+
+			strcpy(dst, src);
+
+			col = strchr(src, ':');
+			if (col != NULL)
+			{
+				*col = '\0';
+				if (sscanf(col+1, "%d", &level) != 1 && !build_descriptors)
+					fprintf(stderr,
+							libpq_gettext("WARNING: invlaid compression level %s in compression option '%s'\n"),
+							col+1, value);
+				return false;
+			}
+			for (i = 0; supported_algorithm[i] != NULL; i++)
+			{
+				if (pg_strcasecmp(src, supported_algorithm[i]) == 0)
+				{
+					if (build_descriptors)
+					{
+						conn->compressors[n_suggested_algorithms].impl = i;
+						conn->compressors[n_suggested_algorithms].level = compression_level;
+					}
+					n_suggested_algorithms += 1;
+					dst += strlen(dst);
+					*dst++ = ',';
+					break;
+				}
+			}
+			if (sep)
+				src = sep+1;
+			else
+				break;
+		}
+		if (n_suggested_algorithms == 0)
+		{
+			if (!build_descriptors)
+				fprintf(stderr,
+						libpq_gettext("WARNING: none of specified algirthms %s is supported by client\n"),
+						value);
+			else
+			{
+				free(conn->compressors);
+				conn>compressors = NULL;
+			}
+			free(*client_compressors);
+			*client_compressors = NULL;
+			return false;
+		}
+		dst[-1] = '\0';
+		return true;
+	}
+}
+
 /*
  * Build a startup packet given a filled-in PGconn structure.
  *
@@ -2259,22 +2388,13 @@ build_startup_packet(const PGconn *conn, char *packet,
 		ADD_STARTUP_OPTION("options", conn->pgoptions);
 	if (conn->compression && conn->compression[0])
 	{
-		bool enabled;
-		/*
-		 * If compression is enabled, then send to the server list of compression algorithms
-		 * supported by client
-		 */
-		if (parse_bool(conn->compression, &enabled))
+		char* client_compression_algorithms;
+		if (build_compressors_list((PGconn*)conn, &client_compression_algorithms, packet == NULL))
 		{
-			char compression_algorithms[ZPQ_MAX_ALGORITHMS];
-			zpq_get_supported_algorithms(compression_algorithms);
-			ADD_STARTUP_OPTION("compression", compression_algorithms);
-		}
-		else if (packet == NULL)
-		{
-			fprintf(stderr,
-				libpq_gettext("WARNING: invlaid value for compression option: '%s'\n"),
-					conn->compression);
+			if (client_compression_algorithms)
+			{
+				ADD_STARTUP_OPTION("_pq_.compression", client_compression_algorithms);
+			}
 		}
 	}
 	if (conn->send_appname)

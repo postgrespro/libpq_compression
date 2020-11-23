@@ -2151,7 +2151,7 @@ retry1:
 				port->database_name = pstrdup(valptr);
 			else if (strcmp(nameptr, "user") == 0)
 				port->user_name = pstrdup(valptr);
-			else if (strcmp(nameptr, "compression") == 0)
+			else if (strcmp(nameptr, "_pq_.compression") == 0)
 				port->compression_algorithms = pstrdup(valptr);
 			else if (strcmp(nameptr, "options") == 0)
 				port->cmdline_options = pstrdup(valptr);

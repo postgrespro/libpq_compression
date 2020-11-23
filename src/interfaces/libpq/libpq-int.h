@@ -318,6 +318,16 @@ typedef struct pg_conn_host
 								 * found in password file. */
 } pg_conn_host;
 
+
+/*
+ * Descriptos of compression algorithms chosen by client
+ */
+typedef struct pg_conn_compressor
+{
+	int        impl;            /* compression implementation index */
+	int        level;           /* compression level */
+} pg_conn_compressor;
+
 /*
  * PGconn stores all the state data associated with a single connection
  * to a backend.
@@ -370,7 +380,9 @@ struct pg_conn
 								 * "sspi") */
 	char	   *ssl_min_protocol_version;	/* minimum TLS protocol version */
 	char	   *ssl_max_protocol_version;	/* maximum TLS protocol version */
-	char	   *compression;    /* stream compression (0 or 1) */
+
+	char	   *compression;    /* stream compression (boolean value, "any" or list of compression algorithms separated by comma) */
+	pg_conn_compressor* compressors; /* descriptors of compression algorithms chosen by client */
 
 	/* Type of connection to make.  Possible values: any, read-write. */
 	char	   *target_session_attrs;

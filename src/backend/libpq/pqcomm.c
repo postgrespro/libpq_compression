@@ -216,33 +216,51 @@ int
 pq_configure(Port* port)
 {
 	char* client_compression_algorithms = port->compression_algorithms;
+
 	/*
-	 * If client request compression, it sends list of supported compression algorithms.
-	 * Each compression algorithm is identified by one letter ('f' - Facebook zsts, 'z' - zlib)
+	 * If client request compression, it sends list of supported compression algorithms separated by comma.
 	 */
 	if (client_compression_algorithms)
 	{
-		char server_compression_algorithms[ZPQ_MAX_ALGORITHMS];
-		char compression_algorithm = ZPQ_NO_COMPRESSION;
+		int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
 		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
-		int impl;
+		int impl = -1;
 		int rc;
+		char** server_compression_algorithms = zpq_get_supported_algorithms();
+		int index = -1;
 
-		/* Get list of compression algorithms, supported by server */
-		zpq_get_supported_algorithms(server_compression_algorithms);
-
-		/* Intersect lists */
-		while (*client_compression_algorithms != '\0')
+		for (int i = 0; *client_compression_algorithms; i++)
 		{
-			if (strchr(server_compression_algorithms, *client_compression_algorithms))
-			{
-				compression_algorithm = *client_compression_algorithms;
-				break;
-			}
-			client_compression_algorithms += 1;
-		}
+			char* sep = strchr(client_compression_algorithms, ',');
+			char* level;
+			if (sep != NULL)
+				*sep = '\0';
 
-		compression[5] = compression_algorithm;
+			level = strchr(client_compression_algorithms, ':');
+			if (level != NULL)
+			{
+				*level = '\0'; /* compression level is ignored now */
+				if (sscanf("%d", level+1, &compression_level) != 1)
+					ereport(LOG,
+							(errmsg("Invalid compression level: %s", level+1)));
+			}
+			for (impl = 0; server_compression_algorithms[impl] != NULL; impl++)
+			{
+				if (pg_strcasecmp(client_compression_algorithms, server_compression_algorithms[impl]) == 0)
+				{
+					index = i;
+					goto SendCompressionAck;
+				}
+			}
+
+			if (sep != NULL)
+				client_compression_algorithms = sep+1;
+			else
+				break;
+		}
+	  SendCompressionAck:
+		free(server_compression_algorithms);
+		compression[5] = (char)index;
 		/* Send 'z' message to the client with selected compression algorithm ('n' if match is not found) */
 		socket_set_nonblocking(false);
 		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
@@ -250,20 +268,15 @@ pq_configure(Port* port)
 		if ((size_t)rc != sizeof(compression))
 			return -1;
 
-		/* initialize compression */
-		impl = zpq_get_algorithm_impl(compression_algorithm);
-		if (impl < 0)
+		if (index >= 0) /* Use compression */
 		{
-			ereport(LOG,
-					(errmsg("Requested algorithm %c is not supported", compression_algorithm)));
-			return -1;
-		}
-		PqStream = zpq_create(impl, write_compressed, read_compressed, MyProcPort, NULL, 0);
-		if (!PqStream)
-		{
-			ereport(LOG,
-					(errmsg("Failed to initialize compressor %c(%d)", compression_algorithm, impl)));
-			return -1;
+			PqStream = zpq_create(impl, compression_level, write_compressed, read_compressed, MyProcPort, NULL, 0);
+			if (!PqStream)
+			{
+				ereport(LOG,
+						(errmsg("Failed to initialize compressor %s", server_compression_algorithms[impl])));
+				return -1;
+			}
 		}
 	}
 	return 0;

@@ -9,9 +9,9 @@
 typedef struct
 {
 	/*
-	 * Returns letter identifying compression algorithm.
+	 * Returns name of compression algorithm.
 	 */
-	char    (*name)(void);
+	char const* (*name)(void);
 
 	/*
 	 * Create compression stream with using rx/tx function for fetching/sending compressed data.
@@ -69,7 +69,6 @@ struct ZpqStream
 #include <zstd.h>
 
 #define ZSTD_BUFFER_SIZE (8*1024)
-#define ZSTD_COMPRESSION_LEVEL 1
 
 typedef struct ZstdStream
 {
@@ -94,12 +93,12 @@ typedef struct ZstdStream
 } ZstdStream;
 
 static ZpqStream*
-zstd_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
+zstd_create(zpq_tx_func tx_func, int level, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
 	ZstdStream* zs = (ZstdStream*)malloc(sizeof(ZstdStream));
 
 	zs->tx_stream = ZSTD_createCStream();
-	ZSTD_initCStream(zs->tx_stream, ZSTD_COMPRESSION_LEVEL);
+	ZSTD_initCStream(zs->tx_stream, level);
 	zs->rx_stream = ZSTD_createDStream();
 	ZSTD_initDStream(zs->rx_stream);
 	zs->tx.dst = zs->tx_buf;
@@ -250,10 +249,10 @@ zstd_buffered_rx(ZpqStream *zstream)
 	return zs != NULL ? zs->rx.size - zs->rx.pos : 0;
 }
 
-static char
+static char const*
 zstd_name(void)
 {
-	return 'f';
+	return 'zstd';
 }
 
 #endif
@@ -266,11 +265,6 @@ zstd_name(void)
 #define ZLIB_BUFFER_SIZE       8192 /* We have to flush stream after each protocol command
 									 * and command is mostly limited by record length,
 									 * which in turn usually less than page size (except TOAST)
-									 */
-#define ZLIB_COMPRESSION_LEVEL 1    /* Experiments shows that default (fastest) compression level
-									 * provides the best size/speed ratio. It is significantly (times)
-									 * faster than more expensive levels and differences in compression
-									 * ratio is not so large
 									 */
 
 typedef struct ZlibStream
@@ -291,7 +285,7 @@ typedef struct ZlibStream
 } ZlibStream;
 
 static ZpqStream*
-zlib_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
+zlib_create(zpq_tx_func tx_func, int level, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
 	int rc;
 	ZlibStream* zs = (ZlibStream*)malloc(sizeof(ZlibStream));
@@ -299,7 +293,7 @@ zlib_create(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, 
 	zs->tx.next_out = zs->tx_buf;
 	zs->tx.avail_out = ZLIB_BUFFER_SIZE;
 	zs->tx_buffered = 0;
-	rc = deflateInit(&zs->tx, ZLIB_COMPRESSION_LEVEL);
+	rc = deflateInit(&zs->tx, level);
 	if (rc != Z_OK)
 	{
 		free(zs);
@@ -446,13 +440,19 @@ zlib_buffered_rx(ZpqStream *zstream)
 	return zs != NULL ? zs->rx.avail_in : 0;
 }
 
-static char
+static char const*
 zlib_name(void)
 {
-	return 'z';
+	return 'zlib';
 }
 
 #endif
+
+static  char const*
+no_compression_name(void)
+{
+	return NULL;
+}
 
 /*
  * Array with all supported compression algorithms.
@@ -465,7 +465,7 @@ static ZpqAlgorithm const zpq_algorithms[] =
 #if HAVE_LIBZ
 	{zlib_name, zlib_create, zlib_read, zlib_write, zlib_free, zlib_error, zlib_buffered_tx, zlib_buffered_rx},
 #endif
-	{NULL}
+	{no_compression_name}
 };
 
 /*
@@ -520,41 +520,18 @@ zpq_buffered_tx(ZpqStream *zs)
 
 /*
  * Get list of the supported algorithms.
- * Each algorithm is identified by one letter: 'f' - Facebook zstd, 'z' - zlib.
- * Algorithm identifies are appended to the provided buffer and terminated by '\0'.
  */
-void
-zpq_get_supported_algorithms(char algorithms[ZPQ_MAX_ALGORITHMS])
+char**
+zpq_get_supported_algorithms(void)
 {
-	int i;
-	for (i = 0; zpq_algorithms[i].name != NULL; i++)
+	size_t n_algorithms = sizeof(zpq_algorithms)/sizeof(*zpq_algorithms);
+	char** algorithm_names = malloc(n_algorithms*sizeof(char*));
+
+	for (size_t i = 0; i < n_algorithms; i++)
 	{
-		Assert(i < ZPQ_MAX_ALGORITHMS);
-		algorithms[i] = zpq_algorithms[i].name();
+		algorithm_names[i] = (char*)zpq_algorithms[i].name();
 	}
-	Assert(i < ZPQ_MAX_ALGORITHMS);
-	algorithms[i] = '\0';
+
+	return algorithm_names;
 }
 
-
-
-/*
- * Choose current algorithm implementation.
- * Returns implementation number or -1 if algorithm with such name is not found
- */
-int
-zpq_get_algorithm_impl(char name)
-{
-	int i;
-	if (name != ZPQ_NO_COMPRESSION)
-	{
-		for (i = 0; zpq_algorithms[i].name != NULL; i++)
-		{
-			if (zpq_algorithms[i].name() == name)
-			{
-				return i;
-			}
-		}
-	}
-	return -1;
-}

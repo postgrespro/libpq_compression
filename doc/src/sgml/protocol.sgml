@@ -276,12 +276,12 @@
       <listitem>
        <para>
          Server acknowledges using compression for client-server communication protocol.
-         Compression can be requested by client by including "compression" option in connection string.
-         Client sends to the server list of compression algorithms, supported by client library
-         (compression algorithm is identified by one letter: <literal>'f'</literal> - Facebook zstd, <literal>'z'</literal> - zlib,...).
+         Compression can be requested by client by including "_pq_.compression" option in connection string.
+         Client sends to the server list of compression algorithms, supported by client library.
          If server supports one of this algorithms, then it acknowledges use of this algorithm and all subsequent libpq messages send both from client to server and
-         visa versa will be compressed. If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression)
-         algorithm identifier and it is up to the client whether to continue work without compression or report error.
+         visa versa will be compressed. Server selects most efficient algorithm among list specified by client and returns to the client
+         index of chosen algorithm in this list. If server is not supporting any of the suggested algorithms, then it replies with -1
+         and it is up to the client whether to continue work without compression or report error.
        </para>
       </listitem>
      </varlistentry>
@@ -3435,10 +3435,11 @@ CompressionAck (B)
 <listitem>
 <para>
   Acknowledge use of compression for protocol data. Client sends to the server list of compression algorithms, supported by client library.
-  If server supports one of this algorithms, then it responds with CompressionAck with identifier (letter) of first such algorithm.
-  If server is not supporting any of the suggested algorithms, then it replies with 'n' (no compression) algorithm.
-  It is up to the client whether to continue work without compression or report error.
-  After receiving this message with algorithm identifier other than 'n', both server and client are switched to compression mode
+  If server supports one of this algorithms, then it acknowledges use of this algorithm and all subsequent libpq messages send both from client to server and
+  visa versa will be compressed. Server selects most efficient algorithm among list specified by client and returns to the client
+  index of chosen algorithm in this list. If server is not supporting any of the suggested algorithms, then it replies with -1
+  and it is up to the client whether to continue work without compression or report error.
+  After receiving this message with algorithm index other than -1, both server and client are switched to compression mode
   and exchange compressed messages.
 </para>
 </listitem>
@@ -3459,7 +3460,7 @@ CompressionAck (B)
 </term>
 <listitem>
 <para>
-        Used compression algorithm. Right now the following streaming compression algorithms are supported: 'f' - Facebook zstd, 'z' - zlib, 'n' - no compression.
+        Index of algorithm in the list of supported algotihms specified by client or -1 if none of them is supported.
 </para>
 </listitem>
 </varlistentry>
@@ -6038,7 +6039,7 @@ StartupMessage (F)
 </varlistentry>
 <varlistentry>
 <term>
-                <literal>compression</literal>
+                <literal>_pq_.compression</literal>
 </term>
 <listitem>
 <para>
