@@ -15,13 +15,14 @@ typedef struct
 
 	/*
 	 * Create compression stream with using rx/tx function for fetching/sending compressed data.
+	 * level: compression level
 	 * tx_func: function for writing compressed data in underlying stream
 	 * rx_func: function for receiving compressed data from underlying stream
 	 * arg: context passed to the function
      * rx_data: received data (compressed data already fetched from input stream)
 	 * rx_data_size: size of data fetched from input stream
 	 */
-	ZpqStream* (*create)(zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size);
+	ZpqStream* (*create)(int level, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size);
 
 	/*
 	 * Read up to "size" raw (decompressed) bytes.
@@ -93,7 +94,7 @@ typedef struct ZstdStream
 } ZstdStream;
 
 static ZpqStream*
-zstd_create(zpq_tx_func tx_func, int level, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
+zstd_create(int level, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
 	ZstdStream* zs = (ZstdStream*)malloc(sizeof(ZstdStream));
 
@@ -285,7 +286,7 @@ typedef struct ZlibStream
 } ZlibStream;
 
 static ZpqStream*
-zlib_create(zpq_tx_func tx_func, int level, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
+zlib_create(int level, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
 	int rc;
 	ZlibStream* zs = (ZlibStream*)malloc(sizeof(ZlibStream));
@@ -472,9 +473,9 @@ static ZpqAlgorithm const zpq_algorithms[] =
  * Index of used compression algorithm in zpq_algorithms array.
  */
 ZpqStream*
-zpq_create(int algorithm_impl, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
+zpq_create(int algorithm_impl, int level, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char* rx_data, size_t rx_data_size)
 {
-	ZpqStream* stream = zpq_algorithms[algorithm_impl].create(tx_func, rx_func, arg, rx_data, rx_data_size);
+	ZpqStream* stream = zpq_algorithms[algorithm_impl].create(level, tx_func, rx_func, arg, rx_data, rx_data_size);
 	if (stream)
 		stream->algorithm = &zpq_algorithms[algorithm_impl];
 	return stream;

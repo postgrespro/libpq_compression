@@ -94,7 +94,7 @@
 
   <para>
     It is possible to compress protocol data to reduce traffic and speed-up client-server interaction.
-    Compression is especial useful for importing/exporting data to/from database using COPY command
+    Compression is especially useful for importing/exporting data to/from database using COPY command
     and for replication (both physical and logical). Also compression can reduce server response time
     in case of queries returning large amount of data (for example returning JSON, BLOBs, text,...)
     Right now two libraries are supported: zlib (default) and zstd (if Postgres was
@@ -276,9 +276,15 @@
       <listitem>
        <para>
          Server acknowledges using compression for client-server communication protocol.
-         Compression can be requested by client by including "_pq_.compression" option in connection string.
-         Client sends to the server list of compression algorithms, supported by client library.
-         If server supports one of this algorithms, then it acknowledges use of this algorithm and all subsequent libpq messages send both from client to server and
+         Compression can be requested by client by including "compression" option in connection string.
+         It can be just boolean values enabling or disabling compression
+         ("true"/"false", "on"/"off", "yes"/"no", "1"/"0"), "auto" or explicit list of compression algorithms
+         separated by comma with optional specification of compression level: "zlib,zstd:5".
+         If compression algorithm is not explicitly specified the most efficient one supported both by
+         client and server is chosen. Client sends to the server list of compression algorithms,
+         supported by client library.
+         If server supports one of this algorithms, then it acknowledges use of this algorithm and
+         all subsequent libpq messages send both from client to server and
          visa versa will be compressed. Server selects most efficient algorithm among list specified by client and returns to the client
          index of chosen algorithm in this list. If server is not supporting any of the suggested algorithms, then it replies with -1
          and it is up to the client whether to continue work without compression or report error.

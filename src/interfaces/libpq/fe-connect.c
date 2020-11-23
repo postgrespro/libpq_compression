@@ -352,7 +352,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	offsetof(struct pg_conn, replication)},
 
 	{"compression", "COMPRESSION", NULL, NULL,
-	    "Libpq-compression", "", 16,
+		"Libpq-compression", "", 16,
 	offsetof(struct pg_conn, compression)},
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
@@ -3243,6 +3243,7 @@ keep_going:						/* We will come back to here until there is
 					if (beresp == 'z') /* Switch on compression */
 					{
 						int index;
+						char resp;
 						/* Read message length word */
 						if (pqGetInt(&msgLength, 4, conn))
 						{
@@ -3257,11 +3258,14 @@ keep_going:						/* We will come back to here until there is
 											  msgLength);
 							goto error_return;
 						}
-						pqGetc(&index, conn);
-						if (index < 0)
+						pqGetc(&resp, conn);
+						index = resp;
+						if (index == (char)-1)
+						{
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "server is not supported requested compression algorithms %s\n"), conn->compression);
+												  "server is not supported requested compression algorithms %s\n"),
+											  conn->compression);
 							goto error_return;
 						}
 						Assert(!conn->zstream);
@@ -3274,7 +3278,8 @@ keep_going:						/* We will come back to here until there is
 							char** supported_algorithms = zpq_get_supported_algorithms();
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "failed to initialize compressor %s\n"), zupported_algorirthms(conn->compressors[index].impl));
+												  "failed to initialize compressor %s\n"),
+											  supported_algorithms[conn->compressors[index].impl]);
 							free(supported_algorithms);
 							goto error_return;
 						}

@@ -2135,94 +2135,28 @@ pqBuildStartupPacket3(PGconn *conn, int *packetlen,
 }
 
 /*
- * Parse boolean value. This code is copied from backend/utils/atd/bool.c
- * because it is not available at frontend.
+ * Build comma-separated list of compression algorithms suggested by client to the server.
+ * It can be either explicitly specified by user in connection string, either
+ * include all algorithms supported by clit library.
+ * This functions returns true if compression string is successfully parsed and
+ * stores comma-separated list of algorithms in *client_compressors.
+ * If compression is disabled, then NULL is assigned to  *client_compressors.
+ * Also it creates array of compressor descriptors, each element of which corresponds
+ * the correspondent algorithm name in *client_compressors list. This array is stored in PGconn
+ * and is used during handshake when compassion acknowledgment response is received from the server.
  */
-static bool
-parse_bool(const char *value, bool *result)
-{
-	switch (*value)
-	{
-		case 't':
-		case 'T':
-			if (pg_strcasecmp(value, "true") == 0)
-			{
-				*result = true;
-				return true;
-			}
-			break;
-		case 'f':
-		case 'F':
-			if (pg_strcasecmp(value, "false") == 0)
-			{
-				*result = false;
-				return true;
-			}
-			break;
-		case 'y':
-		case 'Y':
-			if (pg_strcasecmp(value, "yes") == 0)
-			{
-				*result = true;
-				return true;
-			}
-			break;
-		case 'n':
-		case 'N':
-			if (pg_strcasecmp(value, "no") == 0)
-			{
-				*result = false;
-				return true;
-			}
-			break;
-		case 'o':
-		case 'O':
-			/* 'o' is not unique enough */
-			if (pg_strcasecmp(value, "on") == 0)
-			{
-				*result = true;
-				return true;
-			}
-			else if (pg_strcasecmp(value, "off") == 0)
-			{
-				*result = false;
-				return true;
-			}
-			break;
-		case '1':
-			if (value[1] == '\0')
-			{
-				*result = true;
-				return true;
-			}
-			break;
-		case '0':
-			if (value[1] == '\0')
-			{
-				*result = false;
-				return true;
-			}
-			break;
-		default:
-			break;
-	}
-
-	*result = false;		/* suppress compiler warning */
-	return false;
-}
-
 static bool
 build_compressors_list(PGconn *conn, char** client_compressors, bool build_descriptors)
 {
 	char** supported_algorithms = zpq_get_supported_algorithms();
 	char* value = conn->compression;
-	int n_supported_algorithms = 0;
+	int n_supported_algorithms;
 	int total_len = 0;
 	int i;
 
-	for (n_supported_algorithms = 0; supported_algorithm[n_supported_algorithms] != NULL; n_supported_algorithms++)
+	for (n_supported_algorithms = 0; supported_algorithms[n_supported_algorithms] != NULL; n_supported_algorithms++)
 	{
-		total_len += strlen(supported_algorithm[n_supported_algorithms])+1;
+		total_len += strlen(supported_algorithms[n_supported_algorithms])+1;
 	}
 
 	if (pg_strcasecmp(value, "true") == 0 ||
@@ -2245,7 +2179,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			conn->compressors = malloc(n_supported_algorithms*sizeof(pg_conn_compressor));
 		for (i = 0; i < n_supported_algorithms; i++)
 		{
-			strcpy(p, supported_algorithm[i]);
+			strcpy(p, supported_algorithms[i]);
 			p += strlen(p);
 			*p++ = ',';
 			if (build_descriptors)
@@ -2264,17 +2198,17 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			 pg_strcasecmp(value, "0") == 0)
 	{
 		/* Compression is disabled */
-		*client_compressors = NULL; /* no compressors are avaialable */
+		*client_compressors = NULL;
 		conn->compressors = NULL;
 		return true;
 	}
 	else
 	{
 		/* List of compresison algorithms separated by commas */
-		char* src, dst;
+		char *src, *dst;
 		int n_suggested_algorithms = 0;
 
-		*client_compressors = src = dst = strdup(strlen(value));
+		*client_compressors = src = dst = strdup(value);
 
 		if (build_descriptors)
 			conn->compressors = malloc(n_supported_algorithms*sizeof(pg_conn_compressor));
@@ -2284,7 +2218,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			char* sep = strchr(src, ',');
 			char* col;
 			int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
-			int i;
+
 			if (sep != NULL)
 				sep = '\0';
 
@@ -2294,15 +2228,15 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			if (col != NULL)
 			{
 				*col = '\0';
-				if (sscanf(col+1, "%d", &level) != 1 && !build_descriptors)
+				if (sscanf(col+1, "%d", &compression_level) != 1 && !build_descriptors)
 					fprintf(stderr,
 							libpq_gettext("WARNING: invlaid compression level %s in compression option '%s'\n"),
 							col+1, value);
 				return false;
 			}
-			for (i = 0; supported_algorithm[i] != NULL; i++)
+			for (i = 0; supported_algorithms[i] != NULL; i++)
 			{
-				if (pg_strcasecmp(src, supported_algorithm[i]) == 0)
+				if (pg_strcasecmp(src, supported_algorithms[i]) == 0)
 				{
 					if (build_descriptors)
 					{
@@ -2329,7 +2263,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			else
 			{
 				free(conn->compressors);
-				conn>compressors = NULL;
+				conn->compressors = NULL;
 			}
 			free(*client_compressors);
 			*client_compressors = NULL;

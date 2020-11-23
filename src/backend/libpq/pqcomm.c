@@ -261,7 +261,7 @@ pq_configure(Port* port)
 	  SendCompressionAck:
 		free(server_compression_algorithms);
 		compression[5] = (char)index;
-		/* Send 'z' message to the client with selected compression algorithm ('n' if match is not found) */
+		/* Send 'z' message to the client with selected compression algorithm (or -1 if not found) */
 		socket_set_nonblocking(false);
 		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
 			   && errno == EINTR);
