@@ -112,6 +112,18 @@
 #endif
 
 /*
+ * pg_nodiscard means the compiler should warn if the result of a function
+ * call is ignored.  The name "nodiscard" is chosen in alignment with
+ * (possibly future) C and C++ standards.  For maximum compatibility, use it
+ * as a function declaration specifier, so it goes before the return type.
+ */
+#ifdef __GNUC__
+#define pg_nodiscard __attribute__((warn_unused_result))
+#else
+#define pg_nodiscard
+#endif
+
+/*
  * Append PG_USED_FOR_ASSERTS_ONLY to definitions of variables that are only
  * used in assert-enabled builds, to avoid compiler warnings about unused
  * variables in assert-disabled builds.
@@ -177,6 +189,29 @@
 #define pg_noinline __declspec(noinline)
 #else
 #define pg_noinline
+#endif
+
+/*
+ * Marking certain functions as "hot" or "cold" can be useful to assist the
+ * compiler in arranging the assembly code in a more efficient way.
+ */
+#if defined(__has_attribute)
+
+#if __has_attribute (cold)
+#define pg_attribute_cold __attribute__((cold))
+#else
+#define pg_attribute_cold
+#endif
+
+#if __has_attribute (hot)
+#define pg_attribute_hot __attribute__((hot))
+#else
+#define pg_attribute_hot
+#endif
+
+#else
+#define pg_attribute_hot
+#define pg_attribute_cold
 #endif
 
 /*

@@ -1489,7 +1489,7 @@ pgstat_reset_replslot_counter(const char *name)
 		if (SlotIsPhysical(slot))
 			return;
 
-		memcpy(&msg.m_slotname, name, NAMEDATALEN);
+		strlcpy(msg.m_slotname, name, NAMEDATALEN);
 		msg.clearall = false;
 	}
 	else
@@ -1708,7 +1708,7 @@ pgstat_report_tempfile(size_t filesize)
  */
 void
 pgstat_report_replslot(const char *slotname, int spilltxns, int spillcount,
-					   int spillbytes)
+					   int spillbytes, int streamtxns, int streamcount, int streambytes)
 {
 	PgStat_MsgReplSlot msg;
 
@@ -1716,11 +1716,14 @@ pgstat_report_replslot(const char *slotname, int spilltxns, int spillcount,
 	 * Prepare and send the message
 	 */
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_REPLSLOT);
-	memcpy(&msg.m_slotname, slotname, NAMEDATALEN);
+	strlcpy(msg.m_slotname, slotname, NAMEDATALEN);
 	msg.m_drop = false;
 	msg.m_spill_txns = spilltxns;
 	msg.m_spill_count = spillcount;
 	msg.m_spill_bytes = spillbytes;
+	msg.m_stream_txns = streamtxns;
+	msg.m_stream_count = streamcount;
+	msg.m_stream_bytes = streambytes;
 	pgstat_send(&msg, sizeof(PgStat_MsgReplSlot));
 }
 
@@ -1736,7 +1739,7 @@ pgstat_report_replslot_drop(const char *slotname)
 	PgStat_MsgReplSlot msg;
 
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_REPLSLOT);
-	memcpy(&msg.m_slotname, slotname, NAMEDATALEN);
+	strlcpy(msg.m_slotname, slotname, NAMEDATALEN);
 	msg.m_drop = true;
 	pgstat_send(&msg, sizeof(PgStat_MsgReplSlot));
 }
@@ -6907,7 +6910,9 @@ pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len)
 	if (idx < 0)
 		return;
 
-	Assert(idx >= 0 && idx <= max_replication_slots);
+	/* it must be a valid replication slot index */
+	Assert(idx >= 0 && idx < max_replication_slots);
+
 	if (msg->m_drop)
 	{
 		/* Remove the replication slot statistics with the given name */
@@ -6922,6 +6927,9 @@ pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len)
 		replSlotStats[idx].spill_txns += msg->m_spill_txns;
 		replSlotStats[idx].spill_count += msg->m_spill_count;
 		replSlotStats[idx].spill_bytes += msg->m_spill_bytes;
+		replSlotStats[idx].stream_txns += msg->m_stream_txns;
+		replSlotStats[idx].stream_count += msg->m_stream_count;
+		replSlotStats[idx].stream_bytes += msg->m_stream_bytes;
 	}
 }
 
@@ -7137,7 +7145,7 @@ pgstat_replslot_index(const char *name, bool create_it)
 
 	/* Register new slot */
 	memset(&replSlotStats[nReplSlotStats], 0, sizeof(PgStat_ReplSlotStats));
-	memcpy(&replSlotStats[nReplSlotStats].slotname, name, NAMEDATALEN);
+	strlcpy(replSlotStats[nReplSlotStats].slotname, name, NAMEDATALEN);
 
 	return nReplSlotStats++;
 }
@@ -7155,6 +7163,9 @@ pgstat_reset_replslot(int i, TimestampTz ts)
 	replSlotStats[i].spill_txns = 0;
 	replSlotStats[i].spill_count = 0;
 	replSlotStats[i].spill_bytes = 0;
+	replSlotStats[i].stream_txns = 0;
+	replSlotStats[i].stream_count = 0;
+	replSlotStats[i].stream_bytes = 0;
 	replSlotStats[i].stat_reset_timestamp = ts;
 }
 

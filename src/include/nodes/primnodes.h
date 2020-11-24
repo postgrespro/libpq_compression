@@ -305,6 +305,12 @@ typedef struct Param
  * a crosscheck that the Aggrefs match the plan; but note that when aggsplit
  * indicates a non-final mode, aggtype reflects the transition data type
  * not the SQL-level output type of the aggregate.
+ *
+ * aggno and aggtransno are -1 in the parse stage, and are set in planning.
+ * Aggregates with the same 'aggno' represent the same aggregate expression,
+ * and can share the result.  Aggregates with same 'transno' but different
+ * 'aggno' can share the same transition state, only the final function needs
+ * to be called separately.
  */
 typedef struct Aggref
 {
@@ -326,6 +332,8 @@ typedef struct Aggref
 	char		aggkind;		/* aggregate kind (see pg_aggregate.h) */
 	Index		agglevelsup;	/* > 0 if agg belongs to outer query */
 	AggSplit	aggsplit;		/* expected agg-splitting mode of parent Agg */
+	int			aggno;			/* unique ID within the Agg node */
+	int			aggtransno;		/* unique ID of transition state in the Agg */
 	int			location;		/* token location, or -1 if unknown */
 } Aggref;
 
@@ -445,7 +453,10 @@ typedef enum CoercionContext
 } CoercionContext;
 
 /*
- * CoercionForm - how to display a node that could have come from a cast
+ * CoercionForm - how to display a FuncExpr or related node
+ *
+ * "Coercion" is a bit of a misnomer, since this value records other
+ * special syntaxes besides casts, but for now we'll keep this naming.
  *
  * NB: equal() ignores CoercionForm fields, therefore this *must* not carry
  * any semantically significant information.  We need that behavior so that
@@ -457,7 +468,8 @@ typedef enum CoercionForm
 {
 	COERCE_EXPLICIT_CALL,		/* display as a function call */
 	COERCE_EXPLICIT_CAST,		/* display as an explicit cast */
-	COERCE_IMPLICIT_CAST		/* implicit cast, so hide it */
+	COERCE_IMPLICIT_CAST,		/* implicit cast, so hide it */
+	COERCE_SQL_SYNTAX			/* display with SQL-mandated special syntax */
 } CoercionForm;
 
 /*
