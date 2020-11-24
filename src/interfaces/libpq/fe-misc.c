@@ -61,6 +61,9 @@ static int	pqSocketCheck(PGconn *conn, int forRead, int forWrite,
 						  time_t end_time);
 static int	pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time);
 
+/*
+ * Use zpq_read if compression is switched on
+ */
 #define pq_read_conn(conn)												\
 	(conn->zstream														\
 	 ? zpq_read(conn->zstream, conn->inBuffer + conn->inEnd,			\
@@ -903,6 +906,9 @@ pqSendSome(PGconn *conn, int len)
 	{
 		int			sent;
 		size_t      processed = 0;
+        /*
+		 * Use zpq_write if compression is switched on
+		 */
 		sent = conn->zstream
 			? zpq_write(conn->zstream, ptr, len, &processed)
 #ifndef WIN32

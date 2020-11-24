@@ -320,7 +320,7 @@ typedef struct pg_conn_host
 
 
 /*
- * Descriptos of compression algorithms chosen by client
+ * Descriptors of compression algorithms chosen by client
  */
 typedef struct pg_conn_compressor
 {
