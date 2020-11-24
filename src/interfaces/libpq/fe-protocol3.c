@@ -2220,7 +2220,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
 
 			if (sep != NULL)
-				sep = '\0';
+				*sep = '\0';
 
 			strcpy(dst, src);
 
@@ -2229,10 +2229,12 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			{
 				*col = '\0';
 				if (sscanf(col+1, "%d", &compression_level) != 1 && !build_descriptors)
+				{
 					fprintf(stderr,
 							libpq_gettext("WARNING: invlaid compression level %s in compression option '%s'\n"),
 							col+1, value);
-				return false;
+					return false;
+				}
 			}
 			for (i = 0; supported_algorithms[i] != NULL; i++)
 			{

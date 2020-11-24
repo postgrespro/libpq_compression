@@ -536,3 +536,8 @@ zpq_get_supported_algorithms(void)
 	return algorithm_names;
 }
 
+char const*
+zpq_algorithm_name(ZpqStream *zs)
+{
+	return zs ? zs->algorithm->name() : NULL;
+}

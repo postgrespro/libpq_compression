@@ -94,7 +94,8 @@
 #include "storage/ipc.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
-#include  "common/zpq_stream.h"
+#include "utils/builtins.h"
+#include "common/zpq_stream.h"
 
 /*
  * Cope with the various platform-specific ways to spell TCP keepalive socket
@@ -120,6 +121,7 @@
  */
 int			Unix_socket_permissions;
 char	   *Unix_socket_group;
+bool        libpq_compression;
 
 /* Where the Unix socket files are (list of palloc'd strings) */
 static List *sock_paths = NIL;
@@ -220,7 +222,7 @@ pq_configure(Port* port)
 	/*
 	 * If client request compression, it sends list of supported compression algorithms separated by comma.
 	 */
-	if (client_compression_algorithms)
+	if (client_compression_algorithms && libpq_compression)
 	{
 		int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
 		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
@@ -2077,4 +2079,16 @@ pq_settcpusertimeout(int timeout, Port *port)
 #endif
 
 	return STATUS_OK;
+}
+
+PG_FUNCTION_INFO_V1(pg_compression_algorithm);
+
+Datum
+pg_compression_algorithm(PG_FUNCTION_ARGS)
+{
+	char const* algorithm_name = PqStream ? zpq_algorithm_name(PqStream) : NULL;
+	if (algorithm_name)
+		PG_RETURN_TEXT_P(cstring_to_text(algorithm_name));
+	else
+		PG_RETURN_NULL();
 }

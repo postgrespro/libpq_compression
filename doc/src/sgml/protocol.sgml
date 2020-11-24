@@ -6049,8 +6049,11 @@ StartupMessage (F)
 </term>
 <listitem>
 <para>
-                        Request compression of libpq traffic. Value is list of compression algorithms supported by client:
-                        <literal>'f'</literal> - Facebook zstd, <literal>'z'</literal> - zlib, <literal>'n'</literal> - no compression.
+                        Request compression of libpq traffic. Value is list of compression algorithms supported by client with optional
+                        specification of compression level: <literal>"zlib,zstd:5"</literal>.
+                        When connecting to an older backend, which does not support compression, or in case when the backend support compression
+                        but for some reason wants to disable it, the backend will just ignore the _pq_.compression parameter and won’t send
+                        the compressionAck message to the frontend.
                         By default compression is disabled. Please notice that using compression together with SSL may add extra vulnerabilities:
                         <ulink url="https://en.wikipedia.org/wiki/CRIME">CRIME</ulink>.
 </para>

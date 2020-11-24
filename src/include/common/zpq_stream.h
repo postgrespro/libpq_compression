@@ -26,6 +26,7 @@ char const* zpq_error(ZpqStream* zs);
 size_t zpq_buffered_rx(ZpqStream* zs);
 size_t zpq_buffered_tx(ZpqStream* zs);
 void zpq_free(ZpqStream* zs);
+char const* zpq_algorithm_name(ZpqStream* zs);
 
 /*
   Returns zero terminated array with compression algorithms names
