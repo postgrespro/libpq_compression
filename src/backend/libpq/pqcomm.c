@@ -230,6 +230,11 @@ pq_configure(Port* port)
 		int rc;
 		char** server_compression_algorithms = zpq_get_supported_algorithms();
 		int index = -1;
+		char* protocol_extension = strchr(client_compression_algorithms, ';');
+
+		/* No protocol extension are currently supported */
+		if (protocol_extension)
+			*protocol_extension = '\0';
 
 		for (int i = 0; *client_compression_algorithms; i++)
 		{
