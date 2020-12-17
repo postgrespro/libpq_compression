@@ -89,6 +89,7 @@
 
 #include "common/ip.h"
 #include "libpq/libpq.h"
+#include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "storage/ipc.h"
@@ -206,6 +207,18 @@ static ssize_t read_compressed(void* arg, void* data, size_t size)
 	return rc;
 }
 
+/*
+ * Send to the client index of chosen compression algorithm
+ */
+static void
+SendCompressionACK(int algorithm)
+{
+	StringInfoData buf;
+	pq_beginmessage(&buf, 'z');
+	pq_sendbyte(&buf, (uint8)algorithm);
+	pq_endmessage(&buf);
+	pq_flush();
+}
 
 /* --------------------------------
  *		pq_configure - configure connection using port settings
@@ -225,9 +238,7 @@ pq_configure(Port* port)
 	if (client_compression_algorithms && libpq_compression)
 	{
 		int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
-		char compression[6] = {'z',0,0,0,5,0}; /* message length = 5 */
 		int impl = -1;
-		int rc;
 		char** server_compression_algorithms = zpq_get_supported_algorithms();
 		int index = -1;
 		char* protocol_extension = strchr(client_compression_algorithms, ';');
@@ -267,13 +278,7 @@ pq_configure(Port* port)
 		}
 	  SendCompressionAck:
 		free(server_compression_algorithms);
-		compression[5] = (char)index;
-		/* Send 'z' message to the client with selected compression algorithm (or -1 if not found) */
-		socket_set_nonblocking(false);
-		while ((rc = secure_write(MyProcPort, compression, sizeof(compression))) < 0
-			   && errno == EINTR);
-		if ((size_t)rc != sizeof(compression))
-			return -1;
+		SendCompressionACK(index);
 
 		if (index >= 0) /* Use compression */
 		{

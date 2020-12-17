@@ -2207,8 +2207,9 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 		/* List of compresison algorithms separated by commas */
 		char *src, *dst;
 		int n_suggested_algorithms = 0;
-
-		*client_compressors = src = dst = strdup(value);
+		char* suggested_algorithms = strdup(value);
+		src = suggested_algorithms;
+		*client_compressors = dst = strdup(value);
 
 		if (build_descriptors)
 			conn->compressors = malloc(n_supported_algorithms*sizeof(pg_conn_compressor));
@@ -2256,6 +2257,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			else
 				break;
 		}
+		free(suggested_algorithms);
 		if (n_suggested_algorithms == 0)
 		{
 			if (!build_descriptors)
