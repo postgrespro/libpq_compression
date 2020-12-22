@@ -258,7 +258,7 @@ pq_configure(Port* port)
 			if (level != NULL)
 			{
 				*level = '\0'; /* compression level is ignored now */
-				if (sscanf("%d", level+1, &compression_level) != 1)
+				if (sscanf(level+1, "%d", &compression_level) != 1)
 					ereport(LOG,
 							(errmsg("Invalid compression level: %s", level+1)));
 			}
