@@ -70,6 +70,12 @@ struct ZpqStream
 #include <zstd.h>
 
 #define ZSTD_BUFFER_SIZE (8*1024)
+/*
+ * Maximum allowed back-reference distance, expressed as power of 2.
+ * This setting controls max compressor/decompressor window size.
+ * More details https://github.com/facebook/zstd/blob/v1.4.7/lib/zstd.h#L536
+ */
+#define ZSTD_WINDOWLOG_LIMIT 23 /* set max window size to 8MB */
 
 typedef struct ZstdStream
 {
@@ -100,8 +106,10 @@ zstd_create(int level, zpq_tx_func tx_func, zpq_rx_func rx_func, void *arg, char
 
 	zs->tx_stream = ZSTD_createCStream();
 	ZSTD_initCStream(zs->tx_stream, level);
+	ZSTD_CCtx_setParameter(zs->tx_stream, ZSTD_c_windowLog, ZSTD_WINDOWLOG_LIMIT);
 	zs->rx_stream = ZSTD_createDStream();
 	ZSTD_initDStream(zs->rx_stream);
+	ZSTD_DCtx_setParameter(zs->rx_stream, ZSTD_d_windowLogMax, ZSTD_WINDOWLOG_LIMIT);
 	zs->tx.dst = zs->tx_buf;
 	zs->tx.pos = 0;
 	zs->tx.size = ZSTD_BUFFER_SIZE;
