@@ -3268,6 +3268,14 @@ keep_going:						/* We will come back to here until there is
 											  conn->compression);
 							goto error_return;
 						}
+						if ((unsigned)index >= conn->n_compressors)
+						{
+							appendPQExpBuffer(&conn->errorMessage,
+											  libpq_gettext(
+												  "server returns incorrect compression aslogirhm  index: %d\n"),
+											  index);
+							goto error_return;
+						}
 						Assert(!conn->zstream);
 						conn->zstream = zpq_create(conn->compressors[index].impl,
 												   conn->compressors[index].level,
@@ -3286,6 +3294,13 @@ keep_going:						/* We will come back to here until there is
 						}
 						/* reset buffer */
 						conn->inStart = conn->inCursor = conn->inEnd = 0;
+					}
+					else if (conn->n_compressors != 0 && beresp == 'v') /* negotiate protocol version */
+					{
+						appendPQExpBuffer(&conn->errorMessage,
+										  libpq_gettext(
+											  "server is not supporting libpq compression\n"));
+						goto error_return;
 					} else
 						break;
 				}

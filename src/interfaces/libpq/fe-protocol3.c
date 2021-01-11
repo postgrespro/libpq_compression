@@ -2172,6 +2172,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 		{
 			*client_compressors = NULL; /* no compressors are available */
 			conn->compressors = NULL;
+			conn->n_compressors = 0;
 			return true;
 		}
 		*client_compressors = p = malloc(total_len);
@@ -2200,6 +2201,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 		/* Compression is disabled */
 		*client_compressors = NULL;
 		conn->compressors = NULL;
+		conn->n_compressors = 0;
 		return true;
 	}
 	else
@@ -2258,6 +2260,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 				break;
 		}
 		free(suggested_algorithms);
+		conn->n_compressors = n_suggested_algorithms;
 		if (n_suggested_algorithms == 0)
 		{
 			if (!build_descriptors)
@@ -2268,6 +2271,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			{
 				free(conn->compressors);
 				conn->compressors = NULL;
+				conn->n_compressors = 0;
 			}
 			free(*client_compressors);
 			*client_compressors = NULL;

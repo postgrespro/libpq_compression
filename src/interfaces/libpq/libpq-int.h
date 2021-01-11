@@ -386,6 +386,7 @@ struct pg_conn
 								 * comma) */
 	pg_conn_compressor *compressors;	/* descriptors of compression
 										 * algorithms chosen by client */
+	unsigned			n_compressors;  /* size of compressors array  */
 
 	/* Type of connection to make.  Possible values: any, read-write. */
 	char	   *target_session_attrs;
