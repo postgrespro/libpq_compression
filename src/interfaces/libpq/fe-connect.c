@@ -3264,7 +3264,7 @@ keep_going:						/* We will come back to here until there is
 						{
 							appendPQExpBuffer(&conn->errorMessage,
 											  libpq_gettext(
-												  "server is not supported requested compression algorithms %s\n"),
+												  "server does not support requested compression algorithms %s\n"),
 											  conn->compression);
 							goto error_return;
 						}

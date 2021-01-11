@@ -9,12 +9,13 @@
 typedef struct
 {
 	/*
-	 * Returns name of compression algorithm.
+	 * Name of compression algorithm.
 	 */
 	char const *(*name) (void);
 
 	/*
-	 * Create new compression stream. level: compression level
+	 * Create new compression stream.
+	 * level: compression level
 	 */
 	void	   *(*create_compressor) (int level);
 
@@ -85,8 +86,9 @@ typedef struct
 #define ZPQ_BUFFER_SIZE       8192	/* We have to flush stream after each
 									 * protocol command and command is mostly
 									 * limited by record length, which in turn
-									 * usually less than page size (except
-									 * TOAST) */
+									 * is usually less than page size (except
+									 * TOAST)
+									 */
 
 struct ZpqStream
 {
@@ -148,7 +150,9 @@ zstd_create_compressor(int level)
 
 	c_stream->stream = ZSTD_createCStream();
 	ZSTD_initCStream(c_stream->stream, level);
+#if ZSTD_VERSION_MAJOR > 1 || ZSTD_VERSION_MINOR > 3
 	ZSTD_CCtx_setParameter(c_stream->stream, ZSTD_c_windowLog, ZSTD_WINDOWLOG_LIMIT);
+#endif
 	c_stream->error = NULL;
 	return c_stream;
 }
@@ -160,7 +164,9 @@ zstd_create_decompressor()
 
 	d_stream->stream = ZSTD_createDStream();
 	ZSTD_initDStream(d_stream->stream);
+#if ZSTD_VERSION_MAJOR > 1 || ZSTD_VERSION_MINOR > 3
 	ZSTD_DCtx_setParameter(d_stream->stream, ZSTD_d_windowLogMax, ZSTD_WINDOWLOG_LIMIT);
+#endif
 	d_stream->error = NULL;
 	return d_stream;
 }
@@ -170,17 +176,18 @@ zstd_decompress(void *d_stream, void const *src, size_t src_size, size_t *src_pr
 {
 	ZPQ_ZSTD_DStream *ds = (ZPQ_ZSTD_DStream *) d_stream;
 	ZSTD_inBuffer in;
+	ZSTD_outBuffer out;
+	size_t		rc;
 
 	in.src = src;
 	in.pos = 0;
 	in.size = src_size;
-	ZSTD_outBuffer out;
 
 	out.dst = dst;
 	out.pos = 0;
 	out.size = dst_size;
 
-	size_t		rc = ZSTD_decompressStream(ds->stream, &out, &in);
+	rc = ZSTD_decompressStream(ds->stream, &out, &in);
 
 	*src_processed = in.pos;
 	*dst_processed = out.pos;
@@ -206,11 +213,11 @@ zstd_compress(void *c_stream, void const *src, size_t src_size, size_t *src_proc
 {
 	ZPQ_ZSTD_CStream *cs = (ZPQ_ZSTD_CStream *) c_stream;
 	ZSTD_inBuffer in;
+	ZSTD_outBuffer out;
 
 	in.src = src;
 	in.pos = 0;
 	in.size = src_size;
-	ZSTD_outBuffer out;
 
 	out.dst = dst;
 	out.pos = 0;
@@ -362,6 +369,8 @@ zlib_compress(void *c_stream, void const *src, size_t src_size, size_t *src_proc
 {
 	z_stream   *cs = (z_stream *) c_stream;
 	int			rc;
+	unsigned	deflate_pending = 0;
+
 
 	cs->next_out = (Bytef *) dst;
 	cs->avail_out = dst_size;
@@ -372,8 +381,6 @@ zlib_compress(void *c_stream, void const *src, size_t src_size, size_t *src_proc
 	Assert(rc == Z_OK);
 	*dst_processed = dst_size - cs->avail_out;
 	*src_processed = src_size - cs->avail_in;
-
-	unsigned	deflate_pending = 0;
 
 	deflatePending(cs, &deflate_pending, Z_NULL);	/* check if any data left
 													 * in deflate buffer */
@@ -492,6 +499,9 @@ ssize_t
 zpq_read(ZpqStream * zs, void *buf, size_t size)
 {
 	size_t		buf_pos = 0;
+	size_t		rx_processed;
+	size_t		buf_processed;
+	ssize_t		rc;
 
 	while (buf_pos == 0)
 	{							/* Read until some data fetched */
@@ -516,11 +526,11 @@ zpq_read(ZpqStream * zs, void *buf, size_t size)
 		}
 
 		Assert(zs->rx_pos <= zs->rx_size);
-		size_t		rx_processed = 0;
-		size_t		buf_processed = 0;
-		ssize_t		rc = zs->d_algorithm->decompress(zs->d_stream,
-													 (char *) zs->rx_buf + zs->rx_pos, zs->rx_size - zs->rx_pos, &rx_processed,
-													 buf, size, &buf_processed);
+		rx_processed = 0;
+		buf_processed = 0;
+		rc = zs->d_algorithm->decompress(zs->d_stream,
+										 (char *) zs->rx_buf + zs->rx_pos, zs->rx_size - zs->rx_pos, &rx_processed,
+										 buf, size, &buf_processed);
 
 		zs->rx_pos += rx_processed;
 		zs->rx_total_raw += rx_processed;
@@ -552,14 +562,15 @@ zpq_write(ZpqStream * zs, void const *buf, size_t size, size_t *processed)
 	{
 		if (zs->tx_pos == zs->tx_size)	/* Have nothing to send */
 		{
-			zs->tx_pos = zs->tx_size = 0;	/* Reset pointer to the beginning
-											 * of buffer */
-
 			size_t		tx_processed = 0;
 			size_t		buf_processed = 0;
-			ssize_t		rc = zs->c_algorithm->compress(zs->c_stream,
-													   (char *) buf + buf_pos, size - buf_pos, &buf_processed,
-													   (char *) zs->tx_buf + zs->tx_size, ZPQ_BUFFER_SIZE - zs->tx_size, &tx_processed);
+			ssize_t		rc;
+
+			zs->tx_pos = zs->tx_size = 0;	/* Reset pointer to the beginning of buffer */
+
+			rc = zs->c_algorithm->compress(zs->c_stream,
+										   (char *) buf + buf_pos, size - buf_pos, &buf_processed,
+										   (char *) zs->tx_buf + zs->tx_size, ZPQ_BUFFER_SIZE - zs->tx_size, &tx_processed);
 
 			zs->tx_size += tx_processed;
 			buf_pos += buf_processed;

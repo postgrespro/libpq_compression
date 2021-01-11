@@ -2135,15 +2135,15 @@ pqBuildStartupPacket3(PGconn *conn, int *packetlen,
 }
 
 /*
- * Build comma-separated list of compression algorithms suggested by client to the server.
- * It can be either explicitly specified by user in connection string, either
- * include all algorithms supported by clit library.
- * This functions returns true if compression string is successfully parsed and
- * stores comma-separated list of algorithms in *client_compressors.
- * If compression is disabled, then NULL is assigned to  *client_compressors.
- * Also it creates array of compressor descriptors, each element of which corresponds
- * the correspondent algorithm name in *client_compressors list. This array is stored in PGconn
- * and is used during handshake when compassion acknowledgment response is received from the server.
+ * Build comma-separated list of compression algorithms requested by client.
+ * It can be either explicitly specified by user in connection string, or
+ * include all algorithms supported by client library.
+ * This function returns true if the compression string is successfully parsed and
+ * stores a comma-separated list of algorithms in *client_compressors.
+ * If compression is disabled, then NULL is assigned to *client_compressors.
+ * Also it creates an array of compressor descriptors, each element of which corresponds to
+ * the corresponding algorithm name in *client_compressors list. This array is stored in PGconn
+ * and is used during handshake when a compression acknowledgment response is received from the server.
  */
 static bool
 build_compressors_list(PGconn *conn, char** client_compressors, bool build_descriptors)
@@ -2170,7 +2170,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 
 		if (n_supported_algorithms == 0)
 		{
-			*client_compressors = NULL; /* no compressors are avaialable */
+			*client_compressors = NULL; /* no compressors are available */
 			conn->compressors = NULL;
 			return true;
 		}
@@ -2204,7 +2204,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 	}
 	else
 	{
-		/* List of compresison algorithms separated by commas */
+		/* List of compression algorithms separated by commas */
 		char *src, *dst;
 		int n_suggested_algorithms = 0;
 		char* suggested_algorithms = strdup(value);
@@ -2232,7 +2232,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 				if (sscanf(col+1, "%d", &compression_level) != 1 && !build_descriptors)
 				{
 					fprintf(stderr,
-							libpq_gettext("WARNING: invlaid compression level %s in compression option '%s'\n"),
+							libpq_gettext("WARNING: invalid compression level %s in compression option '%s'\n"),
 							col+1, value);
 					return false;
 				}
@@ -2262,7 +2262,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 		{
 			if (!build_descriptors)
 				fprintf(stderr,
-						libpq_gettext("WARNING: none of specified algirthms %s is supported by client\n"),
+						libpq_gettext("WARNING: none of the specified algorithms are supported by client: %s\n"),
 						value);
 			else
 			{
