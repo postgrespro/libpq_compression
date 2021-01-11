@@ -1191,10 +1191,10 @@ typedef struct PgBackendStatus
 	char	   *st_appname;
 
 	/* client-server traffic information */
-	uint64      st_rx_raw_bytes;
-	uint64      st_tx_raw_bytes;
-	uint64      st_rx_compressed_bytes;
-	uint64      st_tx_compressed_bytes;
+	uint64		st_rx_raw_bytes;
+	uint64		st_tx_raw_bytes;
+	uint64		st_rx_compressed_bytes;
+	uint64		st_tx_compressed_bytes;
 
 	/*
 	 * Current command string; MUST be null-terminated. Note that this string

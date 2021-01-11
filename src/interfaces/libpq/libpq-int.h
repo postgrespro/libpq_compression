@@ -324,9 +324,9 @@ typedef struct pg_conn_host
  */
 typedef struct pg_conn_compressor
 {
-	int        impl;            /* compression implementation index */
-	int        level;           /* compression level */
-} pg_conn_compressor;
+	int			impl;			/* compression implementation index */
+	int			level;			/* compression level */
+}			pg_conn_compressor;
 
 /*
  * PGconn stores all the state data associated with a single connection
@@ -381,8 +381,11 @@ struct pg_conn
 	char	   *ssl_min_protocol_version;	/* minimum TLS protocol version */
 	char	   *ssl_max_protocol_version;	/* maximum TLS protocol version */
 
-	char	   *compression;    /* stream compression (boolean value, "any" or list of compression algorithms separated by comma) */
-	pg_conn_compressor* compressors; /* descriptors of compression algorithms chosen by client */
+	char	   *compression;	/* stream compression (boolean value, "any" or
+								 * list of compression algorithms separated by
+								 * comma) */
+	pg_conn_compressor *compressors;	/* descriptors of compression
+										 * algorithms chosen by client */
 
 	/* Type of connection to make.  Possible values: any, read-write. */
 	char	   *target_session_attrs;
@@ -543,7 +546,7 @@ struct pg_conn
 	PQExpBufferData workBuffer; /* expansible string */
 
 	/* Compression stream */
-	ZpqStream* zstream;
+	ZpqStream  *zstream;
 };
 
 /* PGcancel stores all data necessary to cancel a connection. A copy of this
