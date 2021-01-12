@@ -3268,6 +3268,7 @@ keep_going:						/* We will come back to here until there is
 											  conn->compression);
 							goto error_return;
 						}
+						/* Use unigned comparison to handle negative values */
 						if ((unsigned)index >= conn->n_compressors)
 						{
 							appendPQExpBuffer(&conn->errorMessage,
@@ -6613,6 +6614,22 @@ PQuser(const PGconn *conn)
 	if (!conn)
 		return NULL;
 	return conn->pguser;
+}
+
+char *
+PQcompressor(const PGconn *conn)
+{
+	if (!conn || !conn->zstream)
+		return NULL;
+	return (char*)zpq_compress_algorithm_name(conn->zstream);
+}
+
+char *
+PQdecompressor(const PGconn *conn)
+{
+	if (!conn || !conn->zstream)
+		return NULL;
+	return (char*)zpq_decompress_algorithm_name(conn->zstream);
 }
 
 char *

@@ -1229,17 +1229,25 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <term><literal>compression</literal></term>
       <listitem>
       <para>
-        Request compression of libpq traffic. The client sends a request with a list of compression algorithms.
-        Compression can be requested by a client by including the "compression" option in its connection string.
+        Request compression of libpq traffic. The client sends a request with
+        a list of compression algorithms. Compression can be requested by a client
+        by including the <literal>"compression"</literal> option in its connection string.
         This can either be a boolean value to enable or disable compression
-        ("true"/"false", "on"/"off", "yes"/"no", "1"/"0"), "any", or an explicit list of comma-separated compression algorithms
-        which can optionally include compression level ("zlib,zstd:5").
-        If compression is enabled but an algorithm is not explicitly specified, the client library sends its full list of
+        (<literal>"true"</literal>/<literal>"false"</literal>,
+        <literal>"on"</literal>/<literal>"off"</literal>,
+        <literal>"yes"</literal>/<literal>"no"</literal>,
+        <literal>"1"</literal>/<literal>"0"</literal>),
+        <literal>"any"</literal>,
+        or an explicit list of comma-separated compression algorithms
+        which can optionally include compression level (<literal>"zlib,zstd:5"</literal>).
+        If compression is enabled but an algorithm is not explicitly specified,
+        the client library sends its full list of
         supported algorithms and the server chooses a preferred algorithm.
 
-        If the server accepts one of the algorithms, it replies with an acknowledgment and all future libpq messages between client and server
-        will be compressed.
-        If the server rejects the compression request, it is up to the client whether to continue without compression or to report an error.
+        If the server accepts one of the algorithms, it replies with an acknowledgment
+        and all future libpq messages between client and server  will be compressed.
+        If the server rejects the compression request, it is up to the client whether
+        to continue without compression or to report an error.
         Support for compression algorithms must be enabled when the server is compiled.
         Currently, two libraries are supported: zlib (default) and zstd (if Postgres was
         configured with --with-zstd option). In both cases, streaming mode is used.

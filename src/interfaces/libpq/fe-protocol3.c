@@ -2221,6 +2221,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 			char* sep = strchr(src, ',');
 			char* col;
 			int compression_level = ZPQ_DEFAULT_COMPRESSION_LEVEL;
+			bool found;
 
 			if (sep != NULL)
 				*sep = '\0';
@@ -2239,6 +2240,7 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 					return false;
 				}
 			}
+			found = false;
 			for (i = 0; supported_algorithms[i] != NULL; i++)
 			{
 				if (pg_strcasecmp(src, supported_algorithms[i]) == 0)
@@ -2251,8 +2253,15 @@ build_compressors_list(PGconn *conn, char** client_compressors, bool build_descr
 					n_suggested_algorithms += 1;
 					dst += strlen(dst);
 					*dst++ = ',';
+					found = true;
 					break;
 				}
+			}
+			if (!found)
+			{
+				fprintf(stderr,
+						libpq_gettext("WARNING: algorithm %s is not supported by client\n"),
+						src);
 			}
 			if (sep)
 				src = sep+1;

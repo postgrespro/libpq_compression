@@ -5646,7 +5646,7 @@
   proname => 'pg_tablespace_location', provolatile => 's', prorettype => 'text',
   proargtypes => 'oid', prosrc => 'pg_tablespace_location' },
 
-{ oid => '4142', descr => 'connection compression algorithm',
+{ oid => '9257', descr => 'connection compression algorithm',
   proname => 'pg_compression_algorithm', provolatile => 's', prorettype => 'text',
   proargtypes => '', prosrc => 'pg_compression_algorithm' },
 
