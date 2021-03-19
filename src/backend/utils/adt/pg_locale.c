@@ -2,7 +2,7 @@
  *
  * PostgreSQL locale utilities
  *
- * Portions Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2002-2021, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/pg_locale.c
  *
@@ -105,20 +105,6 @@ char	   *localized_full_months[12 + 1];
 static bool CurrentLocaleConvValid = false;
 static bool CurrentLCTimeValid = false;
 
-/* Environment variable storage area */
-
-#define LC_ENV_BUFSIZE (NAMEDATALEN + 20)
-
-static char lc_collate_envbuf[LC_ENV_BUFSIZE];
-static char lc_ctype_envbuf[LC_ENV_BUFSIZE];
-
-#ifdef LC_MESSAGES
-static char lc_messages_envbuf[LC_ENV_BUFSIZE];
-#endif
-static char lc_monetary_envbuf[LC_ENV_BUFSIZE];
-static char lc_numeric_envbuf[LC_ENV_BUFSIZE];
-static char lc_time_envbuf[LC_ENV_BUFSIZE];
-
 /* Cache for collation-related knowledge */
 
 typedef struct
@@ -163,7 +149,6 @@ pg_perm_setlocale(int category, const char *locale)
 {
 	char	   *result;
 	const char *envvar;
-	char	   *envbuf;
 
 #ifndef WIN32
 	result = setlocale(category, locale);
@@ -199,7 +184,7 @@ pg_perm_setlocale(int category, const char *locale)
 	 */
 	if (category == LC_CTYPE)
 	{
-		static char save_lc_ctype[LC_ENV_BUFSIZE];
+		static char save_lc_ctype[NAMEDATALEN + 20];
 
 		/* copy setlocale() return value before callee invokes it again */
 		strlcpy(save_lc_ctype, result, sizeof(save_lc_ctype));
@@ -216,16 +201,13 @@ pg_perm_setlocale(int category, const char *locale)
 	{
 		case LC_COLLATE:
 			envvar = "LC_COLLATE";
-			envbuf = lc_collate_envbuf;
 			break;
 		case LC_CTYPE:
 			envvar = "LC_CTYPE";
-			envbuf = lc_ctype_envbuf;
 			break;
 #ifdef LC_MESSAGES
 		case LC_MESSAGES:
 			envvar = "LC_MESSAGES";
-			envbuf = lc_messages_envbuf;
 #ifdef WIN32
 			result = IsoLocaleName(locale);
 			if (result == NULL)
@@ -236,26 +218,19 @@ pg_perm_setlocale(int category, const char *locale)
 #endif							/* LC_MESSAGES */
 		case LC_MONETARY:
 			envvar = "LC_MONETARY";
-			envbuf = lc_monetary_envbuf;
 			break;
 		case LC_NUMERIC:
 			envvar = "LC_NUMERIC";
-			envbuf = lc_numeric_envbuf;
 			break;
 		case LC_TIME:
 			envvar = "LC_TIME";
-			envbuf = lc_time_envbuf;
 			break;
 		default:
 			elog(FATAL, "unrecognized LC category: %d", category);
-			envvar = NULL;		/* keep compiler quiet */
-			envbuf = NULL;
-			return NULL;
+			return NULL;		/* keep compiler quiet */
 	}
 
-	snprintf(envbuf, LC_ENV_BUFSIZE - 1, "%s=%s", envvar, result);
-
-	if (putenv(envbuf))
+	if (setenv(envvar, result, 1) != 0)
 		return NULL;
 
 	return result;
@@ -1297,7 +1272,6 @@ lookup_collation_cache(Oid collation, bool set_flags)
 		/* First time through, initialize the hash table */
 		HASHCTL		ctl;
 
-		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(collation_cache_entry);
 		collation_cache = hash_create("Collation cache", 100, &ctl,
@@ -1662,36 +1636,16 @@ get_collation_actual_version(char collprovider, const char *collcollate)
 	}
 	else
 #endif
-	if (collprovider == COLLPROVIDER_LIBC)
+	if (collprovider == COLLPROVIDER_LIBC &&
+		pg_strcasecmp("C", collcollate) != 0 &&
+		pg_strncasecmp("C.", collcollate, 2) != 0 &&
+		pg_strcasecmp("POSIX", collcollate) != 0)
 	{
 #if defined(__GLIBC__)
-		char	   *copy = pstrdup(collcollate);
-		char	   *copy_suffix = strstr(copy, ".");
-		bool		need_version = true;
-
-		/*
-		 * Check for names like C.UTF-8 by chopping off the encoding suffix on
-		 * our temporary copy, so we can skip the version.
-		 */
-		if (copy_suffix)
-			*copy_suffix = '\0';
-		if (pg_strcasecmp("c", copy) == 0 ||
-			pg_strcasecmp("posix", copy) == 0)
-			need_version = false;
-		pfree(copy);
-		if (!need_version)
-			return NULL;
-
 		/* Use the glibc version because we don't have anything better. */
 		collversion = pstrdup(gnu_get_libc_version());
 #elif defined(LC_VERSION_MASK)
 		locale_t    loc;
-
-		/* C[.encoding] and POSIX never change. */
-		if (strcmp("C", collcollate) == 0 ||
-			strncmp("C.", collcollate, 2) == 0 ||
-			strcmp("POSIX", collcollate) == 0)
-			return NULL;
 
 		/* Look up FreeBSD collation version. */
 		loc = newlocale(LC_COLLATE, collcollate, NULL);
@@ -1713,12 +1667,6 @@ get_collation_actual_version(char collprovider, const char *collcollate)
 		NLSVERSIONINFOEX version = {sizeof(NLSVERSIONINFOEX)};
 		WCHAR		wide_collcollate[LOCALE_NAME_MAX_LENGTH];
 
-		/* These would be invalid arguments, but have no version. */
-		if (pg_strcasecmp("c", collcollate) == 0 ||
-			pg_strcasecmp("posix", collcollate) == 0)
-			return NULL;
-
-		/* For all other names, ask the OS. */
 		MultiByteToWideChar(CP_ACP, 0, collcollate, -1, wide_collcollate,
 							LOCALE_NAME_MAX_LENGTH);
 		if (!GetNLSVersionEx(COMPARE_STRING, wide_collcollate, &version))
@@ -1752,10 +1700,11 @@ get_collation_actual_version(char collprovider, const char *collcollate)
 /*
  * Get provider-specific collation version string for a given collation OID.
  * Return NULL if the provider doesn't support versions, or the collation is
- * unversioned (for example "C").
+ * unversioned (for example "C").  Unknown OIDs result in NULL if missing_ok is
+ * true.
  */
 char *
-get_collation_version_for_oid(Oid oid)
+get_collation_version_for_oid(Oid oid, bool missing_ok)
 {
 	HeapTuple	tp;
 	char	   *version;
@@ -1777,7 +1726,11 @@ get_collation_version_for_oid(Oid oid)
 
 		tp = SearchSysCache1(COLLOID, ObjectIdGetDatum(oid));
 		if (!HeapTupleIsValid(tp))
+		{
+			if (missing_ok)
+				return NULL;
 			elog(ERROR, "cache lookup failed for collation %u", oid);
+		}
 		collform = (Form_pg_collation) GETSTRUCT(tp);
 		version = get_collation_actual_version(collform->collprovider,
 											   NameStr(collform->collcollate));

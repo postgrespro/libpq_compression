@@ -4,7 +4,7 @@
  *	  definitions for query plan nodes
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/plannodes.h
@@ -78,6 +78,8 @@ typedef struct PlannedStmt
 	List	   *rowMarks;		/* a list of PlanRowMark's */
 
 	List	   *relationOids;	/* OIDs of relations the plan depends on */
+
+	List	   *partitionOids;	/* OIDs of partitions the plan depends on */
 
 	List	   *invalItems;		/* other dependencies, as PlanInvalItems */
 
@@ -484,6 +486,19 @@ typedef struct TidScan
 	Scan		scan;
 	List	   *tidquals;		/* qual(s) involving CTID = something */
 } TidScan;
+
+/* ----------------
+ *		tid range scan node
+ *
+ * tidrangequals is an implicitly AND'ed list of qual expressions of the form
+ * "CTID relop pseudoconstant", where relop is one of >,>=,<,<=.
+ * ----------------
+ */
+typedef struct TidRangeScan
+{
+	Scan		scan;
+	List	   *tidrangequals;	/* qual(s) involving CTID op something */
+} TidRangeScan;
 
 /* ----------------
  *		subquery scan node

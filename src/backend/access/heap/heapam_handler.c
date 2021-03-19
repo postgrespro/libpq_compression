@@ -3,7 +3,7 @@
  * heapam_handler.c
  *	  heap table access method code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -698,6 +698,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	Datum	   *values;
 	bool	   *isnull;
 	BufferHeapTupleTableSlot *hslot;
+	BlockNumber prev_cblock = InvalidBlockNumber;
 
 	/* Remember if it's a system catalog */
 	is_system_catalog = IsSystemRelation(OldHeap);
@@ -793,14 +794,38 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		else
 		{
 			if (!table_scan_getnextslot(tableScan, ForwardScanDirection, slot))
+			{
+				/*
+				 * If the last pages of the scan were empty, we would go to
+				 * the next phase while heap_blks_scanned != heap_blks_total.
+				 * Instead, to ensure that heap_blks_scanned is equivalent to
+				 * total_heap_blks after the table scan phase, this parameter
+				 * is manually updated to the correct value when the table
+				 * scan finishes.
+				 */
+				pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
+											 heapScan->rs_nblocks);
 				break;
+			}
 
 			/*
 			 * In scan-and-sort mode and also VACUUM FULL, set heap blocks
 			 * scanned
+			 *
+			 * Note that heapScan may start at an offset and wrap around, i.e.
+			 * rs_startblock may be >0, and rs_cblock may end with a number
+			 * below rs_startblock. To prevent showing this wraparound to the
+			 * user, we offset rs_cblock by rs_startblock (modulo rs_nblocks).
 			 */
-			pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
-										 heapScan->rs_cblock + 1);
+			if (prev_cblock != heapScan->rs_cblock)
+			{
+				pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
+											 (heapScan->rs_cblock +
+											  heapScan->rs_nblocks -
+											  heapScan->rs_startblock
+											  ) % heapScan->rs_nblocks + 1);
+				prev_cblock = heapScan->rs_cblock;
+			}
 		}
 
 		tuple = ExecFetchSlotHeapTuple(slot, false, NULL);
@@ -1931,6 +1956,7 @@ heapam_index_validate_scan(Relation heapRelation,
 						 heapRelation,
 						 indexInfo->ii_Unique ?
 						 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+						 false,
 						 indexInfo);
 
 			state->tups_inserted += 1;
@@ -2516,6 +2542,9 @@ static const TableAmRoutine heapam_methods = {
 	.scan_rescan = heap_rescan,
 	.scan_getnextslot = heap_getnextslot,
 
+	.scan_set_tidrange = heap_set_tidrange,
+	.scan_getnextslot_tidrange = heap_getnextslot_tidrange,
+
 	.parallelscan_estimate = table_block_parallelscan_estimate,
 	.parallelscan_initialize = table_block_parallelscan_initialize,
 	.parallelscan_reinitialize = table_block_parallelscan_reinitialize,
@@ -2537,7 +2566,7 @@ static const TableAmRoutine heapam_methods = {
 	.tuple_get_latest_tid = heap_get_latest_tid,
 	.tuple_tid_valid = heapam_tuple_tid_valid,
 	.tuple_satisfies_snapshot = heapam_tuple_satisfies_snapshot,
-	.compute_xid_horizon_for_tuples = heap_compute_xid_horizon_for_tuples,
+	.index_delete_tuples = heap_index_delete_tuples,
 
 	.relation_set_new_filenode = heapam_relation_set_new_filenode,
 	.relation_nontransactional_truncate = heapam_relation_nontransactional_truncate,

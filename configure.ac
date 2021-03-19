@@ -23,7 +23,7 @@ m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.6
 Untested combinations of 'autoconf' and PostgreSQL versions are not
 recommended.  You can remove the check from 'configure.ac' but it is then
 your responsibility whether the result works or not.])])
-AC_COPYRIGHT([Copyright (c) 1996-2020, PostgreSQL Global Development Group])
+AC_COPYRIGHT([Copyright (c) 1996-2021, PostgreSQL Global Development Group])
 AC_CONFIG_SRCDIR([src/backend/access/common/heaptuple.c])
 AC_CONFIG_AUX_DIR(config)
 AC_PREFIX_DEFAULT(/usr/local/pgsql)
@@ -853,15 +853,6 @@ AC_MSG_RESULT([$with_bonjour])
 
 
 #
-# OpenSSL
-#
-AC_MSG_CHECKING([whether to build with OpenSSL support])
-PGAC_ARG_BOOL(with, openssl, no, [build with OpenSSL support],
-              [AC_DEFINE([USE_OPENSSL], 1, [Define to build with OpenSSL support. (--with-openssl)])])
-AC_MSG_RESULT([$with_openssl])
-AC_SUBST(with_openssl)
-
-#
 # SELinux
 #
 AC_MSG_CHECKING([whether to build with SELinux support])
@@ -919,22 +910,18 @@ if test "$with_ossp_uuid" = yes ; then
   with_uuid=ossp
 fi
 
-if test "$with_uuid" = bsd ; then
-  AC_DEFINE([HAVE_UUID_BSD], 1, [Define to 1 if you have BSD UUID support.])
-  UUID_EXTRA_OBJS="md5.o sha1.o"
-elif test "$with_uuid" = e2fs ; then
-  AC_DEFINE([HAVE_UUID_E2FS], 1, [Define to 1 if you have E2FS UUID support.])
-  UUID_EXTRA_OBJS="md5.o sha1.o"
-elif test "$with_uuid" = ossp ; then
-  AC_DEFINE([HAVE_UUID_OSSP], 1, [Define to 1 if you have OSSP UUID support.])
-  UUID_EXTRA_OBJS=""
-elif test "$with_uuid" = no ; then
-  UUID_EXTRA_OBJS=""
-else
-  AC_MSG_ERROR([--with-uuid must specify one of bsd, e2fs, or ossp])
+if test "$with_uuid" != no ; then
+  if test "$with_uuid" = bsd ; then
+    AC_DEFINE([HAVE_UUID_BSD], 1, [Define to 1 if you have BSD UUID support.])
+  elif test "$with_uuid" = e2fs ; then
+    AC_DEFINE([HAVE_UUID_E2FS], 1, [Define to 1 if you have E2FS UUID support.])
+  elif test "$with_uuid" = ossp ; then
+    AC_DEFINE([HAVE_UUID_OSSP], 1, [Define to 1 if you have OSSP UUID support.])
+  else
+    AC_MSG_ERROR([--with-uuid must specify one of bsd, e2fs, or ossp])
+  fi
 fi
 AC_SUBST(with_uuid)
-AC_SUBST(UUID_EXTRA_OBJS)
 
 
 #
@@ -1175,6 +1162,10 @@ AC_SEARCH_LIBS(shmget, cygipc)
 # *BSD:
 AC_SEARCH_LIBS(backtrace_symbols, execinfo)
 
+if test "$enable_thread_safety" = yes; then
+  AC_SEARCH_LIBS(pthread_barrier_wait, pthread)
+fi
+
 if test "$with_readline" = yes; then
   PGAC_CHECK_READLINE
   if test x"$pgac_cv_check_readline" = x"no"; then
@@ -1223,7 +1214,21 @@ if test "$with_gssapi" = yes ; then
   fi
 fi
 
+#
+# SSL Library
+#
+# There is currently only one supported SSL/TLS library: OpenSSL.
+#
+PGAC_ARG_REQ(with, ssl, [LIB], [use LIB for SSL/TLS support (openssl)])
+if test x"$with_ssl" = x"" ; then
+  with_ssl=no
+fi
+PGAC_ARG_BOOL(with, openssl, no, [obsolete spelling of --with-ssl=openssl])
 if test "$with_openssl" = yes ; then
+  with_ssl=openssl
+fi
+
+if test "$with_ssl" = openssl ; then
   dnl Order matters!
   # Minimum required OpenSSL version is 1.0.1
   AC_DEFINE(OPENSSL_API_COMPAT, [0x10001000L],
@@ -1247,7 +1252,11 @@ if test "$with_openssl" = yes ; then
   # thread-safety. In 1.1.0, it's no longer required, and CRYPTO_lock()
   # function was removed.
   AC_CHECK_FUNCS([CRYPTO_lock])
+  AC_DEFINE([USE_OPENSSL], 1, [Define to 1 to build with OpenSSL support. (--with-ssl=openssl)])
+elif test "$with_ssl" != no ; then
+  AC_MSG_ERROR([--with-ssl must specify openssl])
 fi
+AC_SUBST(with_ssl)
 
 if test "$with_pam" = yes ; then
   AC_CHECK_LIB(pam,    pam_start, [], [AC_MSG_ERROR([library 'pam' is required for PAM])])
@@ -1345,6 +1354,7 @@ AC_CHECK_HEADERS(m4_normalize([
 	sys/shm.h
 	sys/sockio.h
 	sys/tas.h
+	sys/uio.h
 	sys/un.h
 	termios.h
 	ucred.h
@@ -1426,7 +1436,7 @@ if test "$with_gssapi" = yes ; then
 	[AC_CHECK_HEADERS(gssapi.h, [], [AC_MSG_ERROR([gssapi.h header file is required for GSSAPI])])])
 fi
 
-if test "$with_openssl" = yes ; then
+if test "$with_ssl" = openssl ; then
   AC_CHECK_HEADER(openssl/ssl.h, [], [AC_MSG_ERROR([header file <openssl/ssl.h> is required for OpenSSL])])
   AC_CHECK_HEADER(openssl/err.h, [], [AC_MSG_ERROR([header file <openssl/err.h> is required for OpenSSL])])
 fi
@@ -1684,6 +1694,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	pstat
 	pthread_is_threaded_np
 	readlink
+	readv
 	setproctitle
 	setproctitle_fast
 	setsid
@@ -1694,6 +1705,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	sync_file_range
 	uselocale
 	wcstombs_l
+	writev
 ]))
 
 # These typically are compiler builtins, for which AC_CHECK_FUNCS fails.
@@ -1755,7 +1767,9 @@ AC_REPLACE_FUNCS(m4_normalize([
 	link
 	mkdtemp
 	pread
+	preadv
 	pwrite
+	pwritev
 	random
 	srandom
 	strlcat
@@ -1763,6 +1777,10 @@ AC_REPLACE_FUNCS(m4_normalize([
 	strnlen
 	strtof
 ]))
+
+if test "$enable_thread_safety" = yes; then
+  AC_REPLACE_FUNCS(pthread_barrier_wait)
+fi
 
 if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both
@@ -1778,11 +1796,13 @@ fi
 case $host_os in
         # Windows uses a specialised env handler
         mingw*)
+                AC_DEFINE(HAVE_SETENV, 1, [Define to 1 because replacement version used.])
                 AC_DEFINE(HAVE_UNSETENV, 1, [Define to 1 because replacement version used.])
+                ac_cv_func_setenv=yes
                 ac_cv_func_unsetenv=yes
                 ;;
         *)
-                AC_REPLACE_FUNCS([unsetenv])
+                AC_REPLACE_FUNCS([setenv unsetenv])
                 ;;
 esac
 
@@ -2177,7 +2197,7 @@ fi
 # first choice, else the native platform sources (Windows API or /dev/urandom)
 # will be used.
 AC_MSG_CHECKING([which random number source to use])
-if test x"$with_openssl" = x"yes" ; then
+if test x"$with_ssl" = x"openssl" ; then
   AC_MSG_RESULT([OpenSSL])
 elif test x"$PORTNAME" = x"win32" ; then
   AC_MSG_RESULT([Windows native])
@@ -2258,13 +2278,12 @@ if test "$with_python" = yes; then
 fi
 
 #
-# Check for DocBook and tools
+# Check for documentation-building tools
 #
-PGAC_PATH_XMLLINT
-PGAC_CHECK_DOCBOOK(4.5)
-PGAC_PATH_PROGS(DBTOEPUB, dbtoepub)
+PGAC_PATH_PROGS(XMLLINT, xmllint)
 PGAC_PATH_PROGS(XSLTPROC, xsltproc)
 PGAC_PATH_PROGS(FOP, fop)
+PGAC_PATH_PROGS(DBTOEPUB, dbtoepub)
 
 #
 # Check for test tools

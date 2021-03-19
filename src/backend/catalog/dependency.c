@@ -4,7 +4,7 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1198,7 +1198,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 			 * log_min_messages are different.
 			 */
 			ereport(DEBUG2,
-					(errmsg("drop auto-cascades to %s",
+					(errmsg_internal("drop auto-cascades to %s",
 							objDesc)));
 		}
 		else if (behavior == DROP_RESTRICT)
@@ -2074,6 +2074,22 @@ find_expr_references_walker(Node *node,
 						   context->addrs);
 		/* fall through to examine arguments */
 	}
+	else if (IsA(node, SubscriptingRef))
+	{
+		SubscriptingRef *sbsref = (SubscriptingRef *) node;
+
+		/*
+		 * The refexpr should provide adequate dependency on refcontainertype,
+		 * and that type in turn depends on refelemtype.  However, a custom
+		 * subscripting handler might set refrestype to something different
+		 * from either of those, in which case we'd better record it.
+		 */
+		if (sbsref->refrestype != sbsref->refcontainertype &&
+			sbsref->refrestype != sbsref->refelemtype)
+			add_object_address(OCLASS_TYPE, sbsref->refrestype, 0,
+							   context->addrs);
+		/* fall through to examine arguments */
+	}
 	else if (IsA(node, SubPlan))
 	{
 		/* Extra work needed here if we ever need this case */
@@ -2245,6 +2261,21 @@ find_expr_references_walker(Node *node,
 							   context->addrs);
 		if (OidIsValid(wc->inRangeColl))
 			add_object_address(OCLASS_COLLATION, wc->inRangeColl, 0,
+							   context->addrs);
+		/* fall through to examine substructure */
+	}
+	else if (IsA(node, CTECycleClause))
+	{
+		CTECycleClause *cc = (CTECycleClause *) node;
+
+		if (OidIsValid(cc->cycle_mark_type))
+			add_object_address(OCLASS_TYPE, cc->cycle_mark_type, 0,
+							   context->addrs);
+		if (OidIsValid(cc->cycle_mark_collation))
+			add_object_address(OCLASS_COLLATION, cc->cycle_mark_collation, 0,
+							   context->addrs);
+		if (OidIsValid(cc->cycle_mark_neop))
+			add_object_address(OCLASS_OPERATOR, cc->cycle_mark_neop, 0,
 							   context->addrs);
 		/* fall through to examine substructure */
 	}

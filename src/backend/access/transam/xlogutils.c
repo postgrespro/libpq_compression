@@ -8,7 +8,7 @@
  * None of this code is used during normal system operation.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/xlogutils.c
@@ -113,7 +113,6 @@ log_invalid_page(RelFileNode node, ForkNumber forkno, BlockNumber blkno,
 		/* create hash table when first needed */
 		HASHCTL		ctl;
 
-		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(xl_invalid_page_key);
 		ctl.entrysize = sizeof(xl_invalid_page);
 
@@ -434,8 +433,7 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
  * NB: A redo function should normally not call this directly. To get a page
  * to modify, use XLogReadBufferForRedoExtended instead. It is important that
  * all pages modified by a WAL record are registered in the WAL records, or
- * they will be invisible to tools that that need to know which pages are
- * modified.
+ * they will be invisible to tools that need to know which pages are modified.
  */
 Buffer
 XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
@@ -777,8 +775,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wa
 
 		elog(DEBUG3, "switched to timeline %u valid until %X/%X",
 			 state->currTLI,
-			 (uint32) (state->currTLIValidUntil >> 32),
-			 (uint32) (state->currTLIValidUntil));
+			 LSN_FORMAT_ARGS(state->currTLIValidUntil));
 	}
 }
 

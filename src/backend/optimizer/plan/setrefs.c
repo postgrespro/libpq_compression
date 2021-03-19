@@ -4,7 +4,7 @@
  *	  Post-processing of a completed plan tree: fix references to subplan
  *	  vars, compute regproc values for operators, etc
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -616,6 +616,22 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 								  rtoffset, NUM_EXEC_QUAL(plan));
 				splan->tidquals =
 					fix_scan_list(root, splan->tidquals,
+								  rtoffset, 1);
+			}
+			break;
+		case T_TidRangeScan:
+			{
+				TidRangeScan *splan = (TidRangeScan *) plan;
+
+				splan->scan.scanrelid += rtoffset;
+				splan->scan.plan.targetlist =
+					fix_scan_list(root, splan->scan.plan.targetlist,
+								  rtoffset, NUM_EXEC_TLIST(plan));
+				splan->scan.plan.qual =
+					fix_scan_list(root, splan->scan.plan.qual,
+								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->tidrangequals =
+					fix_scan_list(root, splan->tidrangequals,
 								  rtoffset, 1);
 			}
 			break;

@@ -840,6 +840,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       column</firstterm>.  It will have an implicit sequence attached to it
       and the column in new rows will automatically have values from the
       sequence assigned to it.
+      Such a column is implicitly <literal>NOT NULL</literal>.
      </para>
 
      <para>
@@ -878,15 +879,17 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
    <varlistentry>
     <term><literal>UNIQUE</literal> (column constraint)</term>
     <term><literal>UNIQUE ( <replaceable class="parameter">column_name</replaceable> [, ... ] )</literal>
-    <optional> INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...]) </optional> (table constraint)</term>
+    <optional> <literal>INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...])</literal> </optional> (table constraint)</term>
 
     <listitem>
      <para>
       The <literal>UNIQUE</literal> constraint specifies that a
       group of one or more columns of a table can contain
-      only unique values. The behavior of the unique table constraint
-      is the same as that for column constraints, with the additional
-      capability to span multiple columns.
+      only unique values. The behavior of a unique table constraint
+      is the same as that of a unique column constraint, with the
+      additional capability to span multiple columns.  The constraint
+      therefore enforces that any two rows must differ in at least one
+      of these columns.
      </para>
 
      <para>
@@ -895,10 +898,10 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
      </para>
 
      <para>
-      Each unique table constraint must name a set of columns that is
+      Each unique constraint should name a set of columns that is
       different from the set of columns named by any other unique or
-      primary key constraint defined for the table.  (Otherwise it
-      would just be the same constraint listed twice.)
+      primary key constraint defined for the table.  (Otherwise, redundant
+      unique constraints will be discarded.)
      </para>
 
      <para>
@@ -911,10 +914,15 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
      <para>
       Adding a unique constraint will automatically create a unique btree
       index on the column or group of columns used in the constraint.
-      The optional clause <literal>INCLUDE</literal> adds to that index
-      one or more columns on which the uniqueness is not enforced.
-      Note that although the constraint is not enforced on the included columns,
-      it still depends on them.  Consequently, some operations on these columns
+     </para>
+
+     <para>
+      The optional <literal>INCLUDE</literal> clause adds to that index
+      one or more columns that are simply <quote>payload</quote>: uniqueness
+      is not enforced on them, and the index cannot be searched on the basis
+      of those columns.  However they can be retrieved by an index-only scan.
+      Note that although the constraint is not enforced on included columns,
+      it still depends on them.  Consequently, some operations on such columns
       (e.g., <literal>DROP COLUMN</literal>) can cause cascaded constraint and
       index deletion.
      </para>
@@ -924,7 +932,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
    <varlistentry>
     <term><literal>PRIMARY KEY</literal> (column constraint)</term>
     <term><literal>PRIMARY KEY ( <replaceable class="parameter">column_name</replaceable> [, ... ] )</literal>
-    <optional> INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...]) </optional> (table constraint)</term>
+    <optional> <literal>INCLUDE ( <replaceable class="parameter">column_name</replaceable> [, ...])</literal> </optional> (table constraint)</term>
     <listitem>
      <para>
       The <literal>PRIMARY KEY</literal> constraint specifies that a column or
@@ -942,27 +950,34 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
 
      <para>
       <literal>PRIMARY KEY</literal> enforces the same data constraints as
-      a combination of <literal>UNIQUE</literal> and <literal>NOT NULL</literal>, but
+      a combination of <literal>UNIQUE</literal> and <literal>NOT
+      NULL</literal>.  However,
       identifying a set of columns as the primary key also provides metadata
       about the design of the schema, since a primary key implies that other
       tables can rely on this set of columns as a unique identifier for rows.
      </para>
 
      <para>
-      <literal>PRIMARY KEY</literal> constraints share the restrictions that
-      <literal>UNIQUE</literal> constraints have when placed on partitioned
-      tables.
+      When placed on a partitioned table, <literal>PRIMARY KEY</literal>
+      constraints share the restrictions previously described
+      for <literal>UNIQUE</literal> constraints.
      </para>
 
      <para>
       Adding a <literal>PRIMARY KEY</literal> constraint will automatically
       create a unique btree index on the column or group of columns used in the
-      constraint.  The optional <literal>INCLUDE</literal> clause allows a list
-      of columns to be specified which will be included in the non-key portion
-      of the index.  Although uniqueness is not enforced on the included columns,
-      the constraint still depends on them. Consequently, some operations on the
-      included columns (e.g., <literal>DROP COLUMN</literal>) can cause cascaded
-      constraint and index deletion.
+      constraint.
+     </para>
+
+     <para>
+      The optional <literal>INCLUDE</literal> clause adds to that index
+      one or more columns that are simply <quote>payload</quote>: uniqueness
+      is not enforced on them, and the index cannot be searched on the basis
+      of those columns.  However they can be retrieved by an index-only scan.
+      Note that although the constraint is not enforced on included columns,
+      it still depends on them.  Consequently, some operations on such columns
+      (e.g., <literal>DROP COLUMN</literal>) can cause cascaded constraint and
+      index deletion.
      </para>
     </listitem>
    </varlistentry>
@@ -1323,8 +1338,9 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     If a table parameter value is set and the
     equivalent <literal>toast.</literal> parameter is not, the TOAST table
     will use the table's parameter value.
-    Specifying these parameters for partitioned tables is not supported,
-    but you may specify them for individual leaf partitions.
+    These parameters, with the exception of
+    <literal>parallel_insert_enabled</literal>, are not supported on partitioned
+    tables, but may be specified for individual leaf partitions.
    </para>
 
    <variablelist>
@@ -1390,6 +1406,32 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       on the relation size.  The actual number of workers chosen by the planner
       or by utility statements that use parallel scans may be less, for example
       due to the setting of <xref linkend="guc-max-worker-processes"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="reloption-parallel-insert-enabled" xreflabel="parallel_insert_enabled">
+    <term><literal>parallel_insert_enabled</literal> (<type>boolean</type>)
+     <indexterm>
+     <primary><varname>parallel_insert_enabled</varname> storage parameter</primary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Enables or disables the query planner's use of parallel insert for
+      this table. When enabled (and provided that
+      <xref linkend="guc-enable-parallel-insert"/> is also <literal>true</literal>),
+      the planner performs additional parallel-safety checks on the table's
+      attributes and indexes, in order to determine if it's safe to use a
+      parallel plan for <command>INSERT</command>. The default is
+      <literal>true</literal>. In cases such as when the table has a large
+      number of partitions, and particularly also when that table uses a
+      parallel-unsafe feature that prevents parallelism, the overhead of these
+      checks may become prohibitively high. To address this potential overhead
+      in these cases, this option can be used to disable the use of parallel
+      insert for this table. Note that if the target table of the parallel
+      insert is partitioned, the <literal>parallel_insert_enabled</literal>
+      option values of the partitions are ignored.
      </para>
     </listitem>
    </varlistentry>
