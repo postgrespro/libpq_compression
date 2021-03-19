@@ -5,7 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/pg_receivewal.c
@@ -115,14 +115,14 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	/* we assume that we get called once at the end of each segment */
 	if (verbose && segment_finished)
 		pg_log_info("finished segment at %X/%X (timeline %u)",
-					(uint32) (xlogpos >> 32), (uint32) xlogpos,
+					LSN_FORMAT_ARGS(xlogpos),
 					timeline);
 
 	if (!XLogRecPtrIsInvalid(endpos) && endpos < xlogpos)
 	{
 		if (verbose)
 			pg_log_info("stopped log streaming at %X/%X (timeline %u)",
-						(uint32) (xlogpos >> 32), (uint32) xlogpos,
+						LSN_FORMAT_ARGS(xlogpos),
 						timeline);
 		time_to_stop = true;
 		return true;
@@ -139,7 +139,7 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	if (verbose && prevtimeline != 0 && prevtimeline != timeline)
 		pg_log_info("switched to timeline %u at %X/%X",
 					timeline,
-					(uint32) (prevpos >> 32), (uint32) prevpos);
+					LSN_FORMAT_ARGS(prevpos));
 
 	prevtimeline = timeline;
 	prevpos = xlogpos;
@@ -420,7 +420,7 @@ StreamLog(void)
 	 */
 	if (verbose)
 		pg_log_info("starting log streaming at %X/%X (timeline %u)",
-					(uint32) (stream.startpos >> 32), (uint32) stream.startpos,
+					LSN_FORMAT_ARGS(stream.startpos),
 					stream.timeline);
 
 	stream.stream_stop = stop_streaming;

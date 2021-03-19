@@ -9,7 +9,7 @@
  * though.)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -34,9 +34,21 @@
 #include "utils/timeout.h"
 
 
+#ifndef USE_POSTMASTER_DEATH_SIGNAL
+/*
+ * On systems that need to make a system call to find out if the postmaster has
+ * gone away, we'll do so only every Nth call to HandleStartupProcInterrupts().
+ * This only affects how long it takes us to detect the condition while we're
+ * busy replaying WAL.  Latch waits and similar which should react immediately
+ * through the usual techniques.
+ */
+#define POSTMASTER_POLL_RATE_LIMIT 1024
+#endif
+
 /*
  * Flags set by interrupt handlers for later service in the redo loop.
  */
+static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t shutdown_requested = false;
 static volatile sig_atomic_t promote_signaled = false;
 
@@ -48,6 +60,7 @@ static volatile sig_atomic_t in_restore_command = false;
 
 /* Signal handlers */
 static void StartupProcTriggerHandler(SIGNAL_ARGS);
+static void StartupProcSigHupHandler(SIGNAL_ARGS);
 
 
 /* --------------------------------
@@ -62,7 +75,19 @@ StartupProcTriggerHandler(SIGNAL_ARGS)
 	int			save_errno = errno;
 
 	promote_signaled = true;
-	SetLatch(MyLatch);
+	WakeupRecovery();
+
+	errno = save_errno;
+}
+
+/* SIGHUP: set flag to re-read config file at next convenient time */
+static void
+StartupProcSigHupHandler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_SIGHUP = true;
+	WakeupRecovery();
 
 	errno = save_errno;
 }
@@ -77,7 +102,7 @@ StartupProcShutdownHandler(SIGNAL_ARGS)
 		proc_exit(1);
 	else
 		shutdown_requested = true;
-	SetLatch(MyLatch);
+	WakeupRecovery();
 
 	errno = save_errno;
 }
@@ -120,12 +145,16 @@ StartupRereadConfig(void)
 void
 HandleStartupProcInterrupts(void)
 {
+#ifdef POSTMASTER_POLL_RATE_LIMIT
+	static uint32 postmaster_poll_count = 0;
+#endif
+
 	/*
 	 * Process any requests or signals received recently.
 	 */
-	if (ConfigReloadPending)
+	if (got_SIGHUP)
 	{
-		ConfigReloadPending = false;
+		got_SIGHUP = false;
 		StartupRereadConfig();
 	}
 
@@ -137,9 +166,15 @@ HandleStartupProcInterrupts(void)
 
 	/*
 	 * Emergency bailout if postmaster has died.  This is to avoid the
-	 * necessity for manual cleanup of all postmaster children.
+	 * necessity for manual cleanup of all postmaster children.  Do this less
+	 * frequently on systems for which we don't have signals to make that
+	 * cheap.
 	 */
-	if (IsUnderPostmaster && !PostmasterIsAlive())
+	if (IsUnderPostmaster &&
+#ifdef POSTMASTER_POLL_RATE_LIMIT
+		postmaster_poll_count++ % POSTMASTER_POLL_RATE_LIMIT == 0 &&
+#endif
+		!PostmasterIsAlive())
 		exit(1);
 
 	/* Process barrier events */
@@ -158,7 +193,7 @@ StartupProcessMain(void)
 	/*
 	 * Properly accept or ignore signals the postmaster might send us.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload); /* reload config file */
+	pqsignal(SIGHUP, StartupProcSigHupHandler); /* reload config file */
 	pqsignal(SIGINT, SIG_IGN);	/* ignore query cancel */
 	pqsignal(SIGTERM, StartupProcShutdownHandler);	/* request shutdown */
 	/* SIGQUIT handler was already set up by InitPostmasterChild */

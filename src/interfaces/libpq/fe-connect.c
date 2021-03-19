@@ -3,7 +3,7 @@
  * fe-connect.c
  *	  functions related to setting up a connection to the backend
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -121,9 +121,7 @@ static int	ldapServiceLookup(const char *purl, PQconninfoOption *options,
  * by environment variables
  */
 #define DefaultHost		"localhost"
-#define DefaultTty		""
 #define DefaultOption	""
-#define DefaultAuthtype		  ""
 #ifdef USE_SSL
 #define DefaultChannelBinding	"prefer"
 #else
@@ -193,14 +191,6 @@ typedef struct _internalPQconninfoOption
 } internalPQconninfoOption;
 
 static const internalPQconninfoOption PQconninfoOptions[] = {
-	/*
-	 * "authtype" is no longer used, so mark it "don't show".  We keep it in
-	 * the array so as not to reject conninfo strings from old apps that might
-	 * still try to set it.
-	 */
-	{"authtype", "PGAUTHTYPE", DefaultAuthtype, NULL,
-	"Database-Authtype", "D", 20, -1},
-
 	{"service", "PGSERVICE", NULL, NULL,
 	"Database-Service", "", 20, -1},
 
@@ -216,7 +206,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Database-Password-File", "", 64,
 	offsetof(struct pg_conn, pgpassfile)},
 
-	{"channel_binding", "PGCHANNELBINDING", NULL, NULL,
+	{"channel_binding", "PGCHANNELBINDING", DefaultChannelBinding, NULL,
 		"Channel-Binding", "", 8,	/* sizeof("require") == 8 */
 	offsetof(struct pg_conn, channel_binding)},
 
@@ -243,14 +233,6 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	{"client_encoding", "PGCLIENTENCODING", NULL, NULL,
 		"Client-Encoding", "", 10,
 	offsetof(struct pg_conn, client_encoding_initial)},
-
-	/*
-	 * "tty" is no longer used either, but keep it present for backwards
-	 * compatibility.
-	 */
-	{"tty", "PGTTY", DefaultTty, NULL,
-		"Backend-Debug-TTY", "D", 40,
-	offsetof(struct pg_conn, pgtty)},
 
 	{"options", "PGOPTIONS", DefaultOption, NULL,
 		"Backend-Options", "", 40,
@@ -318,6 +300,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"SSL-Revocation-List", "", 64,
 	offsetof(struct pg_conn, sslcrl)},
 
+	{"sslcrldir", "PGSSLCRLDIR", NULL, NULL,
+		"SSL-Revocation-List-Dir", "", 64,
+	offsetof(struct pg_conn, sslcrldir)},
+
 	{"requirepeer", "PGREQUIREPEER", NULL, NULL,
 		"Require-Peer", "", 10,
 	offsetof(struct pg_conn, requirepeer)},
@@ -357,7 +343,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
 		DefaultTargetSessionAttrs, NULL,
-		"Target-Session-Attrs", "", 11, /* sizeof("read-write") = 11 */
+		"Target-Session-Attrs", "", 15, /* sizeof("prefer-standby") = 15 */
 	offsetof(struct pg_conn, target_session_attrs)},
 
 	/* Terminating entry --- MUST BE LAST */
@@ -545,6 +531,23 @@ pqDropConnection(PGconn *conn, bool flushInput)
 	}
 }
 
+/*
+ * pqFreeCommandQueue
+ * Free all the entries of PGcmdQueueEntry queue passed.
+ */
+static void
+pqFreeCommandQueue(PGcmdQueueEntry *queue)
+{
+	while (queue != NULL)
+	{
+		PGcmdQueueEntry *cur = queue;
+
+		queue = cur->next;
+		if (cur->query)
+			free(cur->query);
+		free(cur);
+	}
+}
 
 /*
  *		pqDropServerData
@@ -576,6 +579,12 @@ pqDropServerData(PGconn *conn)
 	}
 	conn->notifyHead = conn->notifyTail = NULL;
 
+	pqFreeCommandQueue(conn->cmd_queue_head);
+	conn->cmd_queue_head = conn->cmd_queue_tail = NULL;
+
+	pqFreeCommandQueue(conn->cmd_queue_recycle);
+	conn->cmd_queue_recycle = NULL;
+
 	/* Reset ParameterStatus data, as well as variables deduced from it */
 	pstatus = conn->pstatus;
 	while (pstatus != NULL)
@@ -588,6 +597,8 @@ pqDropServerData(PGconn *conn)
 	conn->pstatus = NULL;
 	conn->client_encoding = PG_SQL_ASCII;
 	conn->std_strings = false;
+	conn->default_transaction_read_only = PG_BOOL_UNKNOWN;
+	conn->in_hot_standby = PG_BOOL_UNKNOWN;
 	conn->sversion = 0;
 
 	/* Drop large-object lookup data */
@@ -764,7 +775,9 @@ PQconnectStartParams(const char *const *keywords,
 	PQconninfoOption *connOptions;
 
 	/*
-	 * Allocate memory for the conn structure
+	 * Allocate memory for the conn structure.  Note that we also expect this
+	 * to initialize conn->errorMessage to empty.  All subsequent steps during
+	 * connection initialization will only append to that buffer.
 	 */
 	conn = makeEmptyPGconn();
 	if (conn == NULL)
@@ -840,7 +853,9 @@ PQconnectStart(const char *conninfo)
 	PGconn	   *conn;
 
 	/*
-	 * Allocate memory for the conn structure
+	 * Allocate memory for the conn structure.  Note that we also expect this
+	 * to initialize conn->errorMessage to empty.  All subsequent steps during
+	 * connection initialization will only append to that buffer.
 	 */
 	conn = makeEmptyPGconn();
 	if (conn == NULL)
@@ -898,8 +913,8 @@ fillPGconn(PGconn *conn, PQconninfoOption *connOptions)
 				*connmember = strdup(tmp);
 				if (*connmember == NULL)
 				{
-					printfPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext("out of memory\n"));
+					appendPQExpBufferStr(&conn->errorMessage,
+										 libpq_gettext("out of memory\n"));
 					return false;
 				}
 			}
@@ -1081,7 +1096,7 @@ connectOptions2(PGconn *conn)
 		if (more || i != conn->nconnhost)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
+			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("could not match %d host names to %d hostaddr values\n"),
 							  count_comma_separated_elems(conn->pghost), conn->nconnhost);
 			return false;
@@ -1102,7 +1117,7 @@ connectOptions2(PGconn *conn)
 		{
 			ch->type = CHT_HOST_NAME;
 #ifdef HAVE_UNIX_SOCKETS
-			if (is_absolute_path(ch->host))
+			if (is_unixsock_path(ch->host))
 				ch->type = CHT_UNIX_SOCKET;
 #endif
 		}
@@ -1162,7 +1177,7 @@ connectOptions2(PGconn *conn)
 		else if (more || i != conn->nconnhost)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
+			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("could not match %d port numbers to %d hosts\n"),
 							  count_comma_separated_elems(conn->pgport), conn->nconnhost);
 			return false;
@@ -1255,7 +1270,7 @@ connectOptions2(PGconn *conn)
 			&& strcmp(conn->channel_binding, "require") != 0)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
+			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("invalid %s value: \"%s\"\n"),
 							  "channel_binding", conn->channel_binding);
 			return false;
@@ -1281,7 +1296,7 @@ connectOptions2(PGconn *conn)
 			&& strcmp(conn->sslmode, "verify-full") != 0)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
+			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("invalid %s value: \"%s\"\n"),
 							  "sslmode", conn->sslmode);
 			return false;
@@ -1302,7 +1317,7 @@ connectOptions2(PGconn *conn)
 			case 'r':			/* "require" */
 			case 'v':			/* "verify-ca" or "verify-full" */
 				conn->status = CONNECTION_BAD;
-				printfPQExpBuffer(&conn->errorMessage,
+				appendPQExpBuffer(&conn->errorMessage,
 								  libpq_gettext("sslmode value \"%s\" invalid when SSL support is not compiled in\n"),
 								  conn->sslmode);
 				return false;
@@ -1323,7 +1338,7 @@ connectOptions2(PGconn *conn)
 	if (!sslVerifyProtocolVersion(conn->ssl_min_protocol_version))
 	{
 		conn->status = CONNECTION_BAD;
-		printfPQExpBuffer(&conn->errorMessage,
+		appendPQExpBuffer(&conn->errorMessage,
 						  libpq_gettext("invalid %s value: \"%s\"\n"),
 						  "ssl_min_protocol_version",
 						  conn->ssl_min_protocol_version);
@@ -1332,7 +1347,7 @@ connectOptions2(PGconn *conn)
 	if (!sslVerifyProtocolVersion(conn->ssl_max_protocol_version))
 	{
 		conn->status = CONNECTION_BAD;
-		printfPQExpBuffer(&conn->errorMessage,
+		appendPQExpBuffer(&conn->errorMessage,
 						  libpq_gettext("invalid %s value: \"%s\"\n"),
 						  "ssl_max_protocol_version",
 						  conn->ssl_max_protocol_version);
@@ -1350,8 +1365,8 @@ connectOptions2(PGconn *conn)
 								conn->ssl_max_protocol_version))
 	{
 		conn->status = CONNECTION_BAD;
-		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("invalid SSL protocol version range\n"));
+		appendPQExpBufferStr(&conn->errorMessage,
+							 libpq_gettext("invalid SSL protocol version range\n"));
 		return false;
 	}
 
@@ -1365,7 +1380,7 @@ connectOptions2(PGconn *conn)
 			strcmp(conn->gssencmode, "require") != 0)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
+			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("invalid %s value: \"%s\"\n"),
 							  "gssencmode",
 							  conn->gssencmode);
@@ -1375,7 +1390,7 @@ connectOptions2(PGconn *conn)
 		if (strcmp(conn->gssencmode, "require") == 0)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
+			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("gssencmode value \"%s\" invalid when GSSAPI support is not compiled in\n"),
 							  conn->gssencmode);
 			return false;
@@ -1390,6 +1405,36 @@ connectOptions2(PGconn *conn)
 	}
 
 	/*
+	 * validate target_session_attrs option, and set target_server_type
+	 */
+	if (conn->target_session_attrs)
+	{
+		if (strcmp(conn->target_session_attrs, "any") == 0)
+			conn->target_server_type = SERVER_TYPE_ANY;
+		else if (strcmp(conn->target_session_attrs, "read-write") == 0)
+			conn->target_server_type = SERVER_TYPE_READ_WRITE;
+		else if (strcmp(conn->target_session_attrs, "read-only") == 0)
+			conn->target_server_type = SERVER_TYPE_READ_ONLY;
+		else if (strcmp(conn->target_session_attrs, "primary") == 0)
+			conn->target_server_type = SERVER_TYPE_PRIMARY;
+		else if (strcmp(conn->target_session_attrs, "standby") == 0)
+			conn->target_server_type = SERVER_TYPE_STANDBY;
+		else if (strcmp(conn->target_session_attrs, "prefer-standby") == 0)
+			conn->target_server_type = SERVER_TYPE_PREFER_STANDBY;
+		else
+		{
+			conn->status = CONNECTION_BAD;
+			appendPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("invalid %s value: \"%s\"\n"),
+							  "target_session_attrs",
+							  conn->target_session_attrs);
+			return false;
+		}
+	}
+	else
+		conn->target_server_type = SERVER_TYPE_ANY;
+
+	/*
 	 * Resolve special "auto" client_encoding from the locale
 	 */
 	if (conn->client_encoding_initial &&
@@ -1399,23 +1444,6 @@ connectOptions2(PGconn *conn)
 		conn->client_encoding_initial = strdup(pg_encoding_to_char(pg_get_encoding_from_locale(NULL, true)));
 		if (!conn->client_encoding_initial)
 			goto oom_error;
-	}
-
-	/*
-	 * Validate target_session_attrs option.
-	 */
-	if (conn->target_session_attrs)
-	{
-		if (strcmp(conn->target_session_attrs, "any") != 0
-			&& strcmp(conn->target_session_attrs, "read-write") != 0)
-		{
-			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid %s value: \"%s\"\n"),
-							  "target_settion_attrs",
-							  conn->target_session_attrs);
-			return false;
-		}
 	}
 
 	/*
@@ -1429,8 +1457,8 @@ connectOptions2(PGconn *conn)
 
 oom_error:
 	conn->status = CONNECTION_BAD;
-	printfPQExpBuffer(&conn->errorMessage,
-					  libpq_gettext("out of memory\n"));
+	appendPQExpBufferStr(&conn->errorMessage,
+						 libpq_gettext("out of memory\n"));
 	return false;
 }
 
@@ -1496,7 +1524,9 @@ PQsetdbLogin(const char *pghost, const char *pgport, const char *pgoptions,
 	PGconn	   *conn;
 
 	/*
-	 * Allocate memory for the conn structure
+	 * Allocate memory for the conn structure.  Note that we also expect this
+	 * to initialize conn->errorMessage to empty.  All subsequent steps during
+	 * connection initialization will only append to that buffer.
 	 */
 	conn = makeEmptyPGconn();
 	if (conn == NULL)
@@ -1562,15 +1592,6 @@ PQsetdbLogin(const char *pghost, const char *pgport, const char *pgoptions,
 			goto oom_error;
 	}
 
-	if (pgtty && pgtty[0] != '\0')
-	{
-		if (conn->pgtty)
-			free(conn->pgtty);
-		conn->pgtty = strdup(pgtty);
-		if (!conn->pgtty)
-			goto oom_error;
-	}
-
 	if (login && login[0] != '\0')
 	{
 		if (conn->pguser)
@@ -1605,8 +1626,8 @@ PQsetdbLogin(const char *pghost, const char *pgport, const char *pgoptions,
 
 oom_error:
 	conn->status = CONNECTION_BAD;
-	printfPQExpBuffer(&conn->errorMessage,
-					  libpq_gettext("out of memory\n"));
+	appendPQExpBufferStr(&conn->errorMessage,
+						 libpq_gettext("out of memory\n"));
 	return conn;
 }
 
@@ -1671,16 +1692,17 @@ getHostaddr(PGconn *conn, char *host_addr, int host_addr_len)
 		host_addr[0] = '\0';
 }
 
-/* ----------
- * connectFailureMessage -
- * create a friendly error message on connection failure.
- * ----------
+/*
+ * emitHostIdentityInfo -
+ * Speculatively append "connection to server so-and-so failed: " to
+ * conn->errorMessage once we've identified the current connection target
+ * address.  This ensures that any subsequent error message will be properly
+ * attributed to the server we couldn't connect to.  conn->raddr must be
+ * valid, and the result of getHostaddr() must be supplied.
  */
 static void
-connectFailureMessage(PGconn *conn, int errorno)
+emitHostIdentityInfo(PGconn *conn, const char *host_addr)
 {
-	char		sebuf[PG_STRERROR_R_BUFLEN];
-
 #ifdef HAVE_UNIX_SOCKETS
 	if (IS_AF_UNIX(conn->raddr.addr.ss_family))
 	{
@@ -1691,24 +1713,14 @@ connectFailureMessage(PGconn *conn, int errorno)
 						   service, sizeof(service),
 						   NI_NUMERICSERV);
 		appendPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("could not connect to server: %s\n"
-										"\tIs the server running locally and accepting\n"
-										"\tconnections on Unix domain socket \"%s\"?\n"),
-						  SOCK_STRERROR(errorno, sebuf, sizeof(sebuf)),
+						  libpq_gettext("connection to server on socket \"%s\" failed: "),
 						  service);
 	}
 	else
 #endif							/* HAVE_UNIX_SOCKETS */
 	{
-		char		host_addr[NI_MAXHOST];
 		const char *displayed_host;
 		const char *displayed_port;
-
-		/*
-		 * Optionally display the network address with the hostname. This is
-		 * useful to distinguish between IPv4 and IPv6 connections.
-		 */
-		getHostaddr(conn, host_addr, NI_MAXHOST);
 
 		/* To which host and port were we actually connecting? */
 		if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
@@ -1725,24 +1737,44 @@ connectFailureMessage(PGconn *conn, int errorno)
 		 * looked-up IP address.
 		 */
 		if (conn->connhost[conn->whichhost].type != CHT_HOST_ADDRESS &&
-			strlen(host_addr) > 0 &&
+			host_addr[0] &&
 			strcmp(displayed_host, host_addr) != 0)
 			appendPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("could not connect to server: %s\n"
-											"\tIs the server running on host \"%s\" (%s) and accepting\n"
-											"\tTCP/IP connections on port %s?\n"),
-							  SOCK_STRERROR(errorno, sebuf, sizeof(sebuf)),
+							  libpq_gettext("connection to server at \"%s\" (%s), port %s failed: "),
 							  displayed_host, host_addr,
 							  displayed_port);
 		else
 			appendPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("could not connect to server: %s\n"
-											"\tIs the server running on host \"%s\" and accepting\n"
-											"\tTCP/IP connections on port %s?\n"),
-							  SOCK_STRERROR(errorno, sebuf, sizeof(sebuf)),
+							  libpq_gettext("connection to server at \"%s\", port %s failed: "),
 							  displayed_host,
 							  displayed_port);
 	}
+}
+
+/* ----------
+ * connectFailureMessage -
+ * create a friendly error message on connection failure,
+ * using the given errno value.  Use this for error cases that
+ * imply that there's no server there.
+ * ----------
+ */
+static void
+connectFailureMessage(PGconn *conn, int errorno)
+{
+	char		sebuf[PG_STRERROR_R_BUFLEN];
+
+	appendPQExpBuffer(&conn->errorMessage,
+					  "%s\n",
+					  SOCK_STRERROR(errorno, sebuf, sizeof(sebuf)));
+
+#ifdef HAVE_UNIX_SOCKETS
+	if (IS_AF_UNIX(conn->raddr.addr.ss_family))
+		appendPQExpBufferStr(&conn->errorMessage,
+							 libpq_gettext("\tIs the server running locally and accepting connections on that socket?\n"));
+	else
+#endif
+		appendPQExpBufferStr(&conn->errorMessage,
+							 libpq_gettext("\tIs the server running on that host and accepting TCP/IP connections?\n"));
 }
 
 /*
@@ -2026,22 +2058,14 @@ connectDBStart(PGconn *conn)
 	 */
 	if (!pg_link_canary_is_frontend())
 	{
-		printfPQExpBuffer(&conn->errorMessage,
-						  "libpq is incorrectly linked to backend functions\n");
+		appendPQExpBufferStr(&conn->errorMessage,
+							 "libpq is incorrectly linked to backend functions\n");
 		goto connect_errReturn;
 	}
 
 	/* Ensure our buffers are empty */
 	conn->inStart = conn->inCursor = conn->inEnd = 0;
 	conn->outCount = 0;
-
-	/*
-	 * Ensure errorMessage is empty, too.  PQconnectPoll will append messages
-	 * to it in the process of scanning for a working server.  Thus, if we
-	 * fail to connect to multiple hosts, the final error message will include
-	 * details about each failure.
-	 */
-	resetPQExpBuffer(&conn->errorMessage);
 
 	/*
 	 * Set up to try to connect to the first host.  (Setting whichhost = -1 is
@@ -2052,6 +2076,10 @@ connectDBStart(PGconn *conn)
 	conn->try_next_addr = false;
 	conn->try_next_host = true;
 	conn->status = CONNECTION_NEEDED;
+
+	/* Also reset the target_server_type state if needed */
+	if (conn->target_server_type == SERVER_TYPE_PREFER_STANDBY_PASS2)
+		conn->target_server_type = SERVER_TYPE_PREFER_STANDBY;
 
 	/*
 	 * The code for processing CONNECTION_NEEDED state is in PQconnectPoll(),
@@ -2148,12 +2176,6 @@ connectDBComplete(PGconn *conn)
 		switch (flag)
 		{
 			case PGRES_POLLING_OK:
-
-				/*
-				 * Reset stored error messages since we now have a working
-				 * connection
-				 */
-				resetPQExpBuffer(&conn->errorMessage);
 				return 1;		/* success! */
 
 			case PGRES_POLLING_READING:
@@ -2204,46 +2226,6 @@ connectDBComplete(PGconn *conn)
 	}
 }
 
-/*
- * This subroutine saves conn->errorMessage, which will be restored back by
- * restoreErrorMessage subroutine.  Returns false on OOM failure.
- */
-static bool
-saveErrorMessage(PGconn *conn, PQExpBuffer savedMessage)
-{
-	initPQExpBuffer(savedMessage);
-	appendPQExpBufferStr(savedMessage,
-						 conn->errorMessage.data);
-	if (PQExpBufferBroken(savedMessage))
-	{
-		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("out of memory\n"));
-		return false;
-	}
-	/* Clear whatever is in errorMessage now */
-	resetPQExpBuffer(&conn->errorMessage);
-	return true;
-}
-
-/*
- * Restores saved error messages back to conn->errorMessage, prepending them
- * to whatever is in conn->errorMessage already.  (This does the right thing
- * if anything's been added to conn->errorMessage since saveErrorMessage.)
- */
-static void
-restoreErrorMessage(PGconn *conn, PQExpBuffer savedMessage)
-{
-	appendPQExpBufferStr(savedMessage, conn->errorMessage.data);
-	resetPQExpBuffer(&conn->errorMessage);
-	appendPQExpBufferStr(&conn->errorMessage, savedMessage->data);
-	/* If any step above hit OOM, just report that */
-	if (PQExpBufferBroken(savedMessage) ||
-		PQExpBufferBroken(&conn->errorMessage))
-		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("out of memory\n"));
-	termPQExpBuffer(savedMessage);
-}
-
 /* ----------------
  *		PQconnectPoll
  *
@@ -2279,7 +2261,6 @@ PQconnectPoll(PGconn *conn)
 	PGresult   *res;
 	char		sebuf[PG_STRERROR_R_BUFLEN];
 	int			optval;
-	PQExpBufferData savedMessage;
 
 	if (conn == NULL)
 		return PGRES_POLLING_FAILED;
@@ -2299,6 +2280,9 @@ PQconnectPoll(PGconn *conn)
 			/* These are reading states */
 		case CONNECTION_AWAITING_RESPONSE:
 		case CONNECTION_AUTH_OK:
+		case CONNECTION_CHECK_WRITABLE:
+		case CONNECTION_CONSUME:
+		case CONNECTION_CHECK_STANDBY:
 			{
 				/* Load waiting data */
 				int			n = pqReadData(conn);
@@ -2316,16 +2300,11 @@ PQconnectPoll(PGconn *conn)
 		case CONNECTION_MADE:
 			break;
 
-			/* We allow pqSetenvPoll to decide whether to proceed. */
-		case CONNECTION_SETENV:
-			break;
-
 			/* Special cases: proceed without waiting. */
 		case CONNECTION_SSL_STARTUP:
 		case CONNECTION_NEEDED:
-		case CONNECTION_CHECK_WRITABLE:
-		case CONNECTION_CONSUME:
 		case CONNECTION_GSS_STARTUP:
+		case CONNECTION_CHECK_TARGET:
 			break;
 
 		default:
@@ -2360,15 +2339,28 @@ keep_going:						/* We will come back to here until there is
 		int			ret;
 		char		portstr[MAXPGPATH];
 
-		if (conn->whichhost + 1 >= conn->nconnhost)
+		if (conn->whichhost + 1 < conn->nconnhost)
+			conn->whichhost++;
+		else
 		{
 			/*
-			 * Oops, no more hosts.  An appropriate error message is already
-			 * set up, so just set the right status.
+			 * Oops, no more hosts.
+			 *
+			 * If we are trying to connect in "prefer-standby" mode, then drop
+			 * the standby requirement and start over.
+			 *
+			 * Otherwise, an appropriate error message is already set up, so
+			 * we just need to set the right status.
 			 */
-			goto error_return;
+			if (conn->target_server_type == SERVER_TYPE_PREFER_STANDBY &&
+				conn->nconnhost > 0)
+			{
+				conn->target_server_type = SERVER_TYPE_PREFER_STANDBY_PASS2;
+				conn->whichhost = 0;
+			}
+			else
+				goto error_return;
 		}
-		conn->whichhost++;
 
 		/* Drop any address info for previous host */
 		release_conn_addrinfo(conn);
@@ -2505,6 +2497,7 @@ keep_going:						/* We will come back to here until there is
 		/* Drop any PGresult we might have, too */
 		conn->asyncStatus = PGASYNC_IDLE;
 		conn->xactStatus = PQTRANS_IDLE;
+		conn->pipelineStatus = PQ_PIPELINE_OFF;
 		pqClearAsyncResult(conn);
 
 		/* Reset conn->status to put the state machine in the right state */
@@ -2540,30 +2533,30 @@ keep_going:						/* We will come back to here until there is
 						goto keep_going;
 					}
 
-					/* Remember current address for possible error msg */
+					/* Remember current address for possible use later */
 					memcpy(&conn->raddr.addr, addr_cur->ai_addr,
 						   addr_cur->ai_addrlen);
 					conn->raddr.salen = addr_cur->ai_addrlen;
 
-					/* set connip */
+					/*
+					 * Set connip, too.  Note we purposely ignore strdup
+					 * failure; not a big problem if it fails.
+					 */
 					if (conn->connip != NULL)
 					{
 						free(conn->connip);
 						conn->connip = NULL;
 					}
-
 					getHostaddr(conn, host_addr, NI_MAXHOST);
-					if (strlen(host_addr) > 0)
+					if (host_addr[0])
 						conn->connip = strdup(host_addr);
 
-					/*
-					 * purposely ignore strdup failure; not a big problem if
-					 * it fails anyway.
-					 */
-
+					/* Try to create the socket */
 					conn->sock = socket(addr_cur->ai_family, SOCK_STREAM, 0);
 					if (conn->sock == PGINVALID_SOCKET)
 					{
+						int			errorno = SOCK_ERRNO;
+
 						/*
 						 * Silently ignore socket() failure if we have more
 						 * addresses to try; this reduces useless chatter in
@@ -2576,11 +2569,21 @@ keep_going:						/* We will come back to here until there is
 							conn->try_next_addr = true;
 							goto keep_going;
 						}
+						emitHostIdentityInfo(conn, host_addr);
 						appendPQExpBuffer(&conn->errorMessage,
 										  libpq_gettext("could not create socket: %s\n"),
-										  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+										  SOCK_STRERROR(errorno, sebuf, sizeof(sebuf)));
 						goto error_return;
 					}
+
+					/*
+					 * Once we've identified a target address, all errors
+					 * except the preceding socket()-failure case should be
+					 * prefixed with host-identity information.  (If the
+					 * connection succeeds, the contents of conn->errorMessage
+					 * won't matter, so this is harmless.)
+					 */
+					emitHostIdentityInfo(conn, host_addr);
 
 					/*
 					 * Select socket options: no delay of outgoing data for
@@ -2924,11 +2927,26 @@ keep_going:						/* We will come back to here until there is
 #ifdef USE_SSL
 
 				/*
-				 * If SSL is enabled and we haven't already got it running,
-				 * request it instead of sending the startup message.
+				 * Enable the libcrypto callbacks before checking if SSL needs
+				 * to be done.  This is done before sending the startup packet
+				 * as depending on the type of authentication done, like MD5
+				 * or SCRAM that use cryptohashes, the callbacks would be
+				 * required even without a SSL connection
+				 */
+				if (pqsecure_initialize(conn, false, true) < 0)
+					goto error_return;
+
+				/*
+				 * If SSL is enabled and we haven't already got encryption of
+				 * some sort running, request SSL instead of sending the
+				 * startup message.
 				 */
 				if (conn->allow_ssl_try && !conn->wait_ssl_try &&
-					!conn->ssl_in_use)
+					!conn->ssl_in_use
+#ifdef ENABLE_GSS
+					&& !conn->gssenc
+#endif
+					)
 				{
 					ProtocolVersion pv;
 
@@ -2956,20 +2974,12 @@ keep_going:						/* We will come back to here until there is
 				/*
 				 * Build the startup packet.
 				 */
-				if (PG_PROTOCOL_MAJOR(conn->pversion) >= 3)
-					startpacket = pqBuildStartupPacket3(conn, &packetlen,
-														EnvironmentOptions);
-				else
-					startpacket = pqBuildStartupPacket2(conn, &packetlen,
-														EnvironmentOptions);
+				startpacket = pqBuildStartupPacket3(conn, &packetlen,
+													EnvironmentOptions);
 				if (!startpacket)
 				{
-					/*
-					 * will not appendbuffer here, since it's likely to also
-					 * run out of memory
-					 */
-					printfPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext("out of memory\n"));
+					appendPQExpBufferStr(&conn->errorMessage,
+										 libpq_gettext("out of memory\n"));
 					goto error_return;
 				}
 
@@ -3037,8 +3047,14 @@ keep_going:						/* We will come back to here until there is
 					{
 						/* mark byte consumed */
 						conn->inStart = conn->inCursor;
-						/* Set up global SSL state if required */
-						if (pqsecure_initialize(conn) != 0)
+
+						/*
+						 * Set up global SSL state if required.  The crypto
+						 * state has already been set if libpq took care of
+						 * doing that, so there is no need to make that happen
+						 * again.
+						 */
+						if (pqsecure_initialize(conn, true, false) != 0)
 							goto error_return;
 					}
 					else if (SSLok == 'N')
@@ -3057,6 +3073,7 @@ keep_going:						/* We will come back to here until there is
 						}
 						/* Otherwise, proceed with normal startup */
 						conn->allow_ssl_try = false;
+						/* We can proceed using this connection */
 						conn->status = CONNECTION_MADE;
 						return PGRES_POLLING_WRITING;
 					}
@@ -3154,8 +3171,7 @@ keep_going:						/* We will come back to here until there is
 						 * don't hang up the socket, though.
 						 */
 						conn->try_gss = false;
-						pqDropConnection(conn, true);
-						conn->status = CONNECTION_NEEDED;
+						need_new_connection = true;
 						goto keep_going;
 					}
 
@@ -3173,6 +3189,7 @@ keep_going:						/* We will come back to here until there is
 						}
 
 						conn->try_gss = false;
+						/* We can proceed using this connection */
 						conn->status = CONNECTION_MADE;
 						return PGRES_POLLING_WRITING;
 					}
@@ -3201,8 +3218,7 @@ keep_going:						/* We will come back to here until there is
 					 * the current connection to do so, though.
 					 */
 					conn->try_gss = false;
-					pqDropConnection(conn, true);
-					conn->status = CONNECTION_NEEDED;
+					need_new_connection = true;
 					goto keep_going;
 				}
 				return pollres;
@@ -3319,19 +3335,11 @@ keep_going:						/* We will come back to here until there is
 					goto error_return;
 				}
 
-				if (PG_PROTOCOL_MAJOR(conn->pversion) >= 3)
+				/* Read message length word */
+				if (pqGetInt(&msgLength, 4, conn))
 				{
-					/* Read message length word */
-					if (pqGetInt(&msgLength, 4, conn))
-					{
-						/* We'll come back when there is more data */
-						return PGRES_POLLING_READING;
-					}
-				}
-				else
-				{
-					/* Set phony message length to disable checks below */
-					msgLength = 8;
+					/* We'll come back when there is more data */
+					return PGRES_POLLING_READING;
 				}
 
 				/*
@@ -3340,7 +3348,9 @@ keep_going:						/* We will come back to here until there is
 				 * auth requests may not be that small.  Errors can be a
 				 * little larger, but not huge.  If we see a large apparent
 				 * length in an error, it means we're really talking to a
-				 * pre-3.0-protocol server; cope.
+				 * pre-3.0-protocol server; cope.  (Before version 14, the
+				 * server also used the old protocol for errors that happened
+				 * before processing the startup packet.)
 				 */
 				if (beresp == 'R' && (msgLength < 8 || msgLength > 2000))
 				{
@@ -3363,20 +3373,14 @@ keep_going:						/* We will come back to here until there is
 					conn->inStart = conn->inCursor;
 
 					/*
-					 * The postmaster typically won't end its message with a
-					 * newline, so add one to conform to libpq conventions.
+					 * Before 7.2, the postmaster didn't always end its
+					 * messages with a newline, so add one if needed to
+					 * conform to libpq conventions.
 					 */
-					appendPQExpBufferChar(&conn->errorMessage, '\n');
-
-					/*
-					 * If we tried to open the connection in 3.0 protocol,
-					 * fall back to 2.0 protocol.
-					 */
-					if (PG_PROTOCOL_MAJOR(conn->pversion) >= 3)
+					if (conn->errorMessage.len == 0 ||
+						conn->errorMessage.data[conn->errorMessage.len - 1] != '\n')
 					{
-						conn->pversion = PG_PROTOCOL(2, 0);
-						need_new_connection = true;
-						goto keep_going;
+						appendPQExpBufferChar(&conn->errorMessage, '\n');
 					}
 
 					goto error_return;
@@ -3384,9 +3388,6 @@ keep_going:						/* We will come back to here until there is
 
 				/*
 				 * Can't process if message body isn't all here yet.
-				 *
-				 * (In protocol 2.0 case, we are assuming messages carry at
-				 * least 4 bytes of data.)
 				 */
 				msgLength -= 4;
 				avail = conn->inEnd - conn->inCursor;
@@ -3407,24 +3408,27 @@ keep_going:						/* We will come back to here until there is
 				/* Handle errors. */
 				if (beresp == 'E')
 				{
-					if (PG_PROTOCOL_MAJOR(conn->pversion) >= 3)
+					if (pqGetErrorNotice3(conn, true))
 					{
-						if (pqGetErrorNotice3(conn, true))
-						{
-							/* We'll come back when there is more data */
-							return PGRES_POLLING_READING;
-						}
-					}
-					else
-					{
-						if (pqGets_append(&conn->errorMessage, conn))
-						{
-							/* We'll come back when there is more data */
-							return PGRES_POLLING_READING;
-						}
+						/* We'll come back when there is more data */
+						return PGRES_POLLING_READING;
 					}
 					/* OK, we read the message; mark data consumed */
 					conn->inStart = conn->inCursor;
+
+					/*
+					 * If error is "cannot connect now", try the next host if
+					 * any (but we don't want to consider additional addresses
+					 * for this host, nor is there much point in changing SSL
+					 * or GSS mode).  This is helpful when dealing with
+					 * standby servers that might not be in hot-standby state.
+					 */
+					if (strcmp(conn->last_sqlstate,
+							   ERRCODE_CANNOT_CONNECT_NOW) == 0)
+					{
+						conn->try_next_host = true;
+						goto keep_going;
+					}
 
 					/* Check to see if we should mention pgpassfile */
 					pgpassfileWarning(conn);
@@ -3437,10 +3441,9 @@ keep_going:						/* We will come back to here until there is
 					 */
 					if (conn->gssenc && conn->gssencmode[0] == 'p')
 					{
-						/* postmaster expects us to drop the connection */
+						/* only retry once */
 						conn->try_gss = false;
-						pqDropConnection(conn, true);
-						conn->status = CONNECTION_NEEDED;
+						need_new_connection = true;
 						goto keep_going;
 					}
 #endif
@@ -3493,33 +3496,6 @@ keep_going:						/* We will come back to here until there is
 				msgLength -= 4;
 
 				/*
-				 * Ensure the password salt is in the input buffer, if it's an
-				 * MD5 request.  All the other authentication methods that
-				 * contain extra data in the authentication request are only
-				 * supported in protocol version 3, in which case we already
-				 * read the whole message above.
-				 */
-				if (areq == AUTH_REQ_MD5 && PG_PROTOCOL_MAJOR(conn->pversion) < 3)
-				{
-					msgLength += 4;
-
-					avail = conn->inEnd - conn->inCursor;
-					if (avail < 4)
-					{
-						/*
-						 * Before returning, try to enlarge the input buffer
-						 * if needed to hold the whole message; see notes in
-						 * pqParseInput3.
-						 */
-						if (pqCheckInBufferSpace(conn->inCursor + (size_t) 4,
-												 conn))
-							goto error_return;
-						/* We'll come back when there is more data */
-						return PGRES_POLLING_READING;
-					}
-				}
-
-				/*
 				 * Process the rest of the authentication request message, and
 				 * respond to it if necessary.
 				 *
@@ -3527,7 +3503,6 @@ keep_going:						/* We will come back to here until there is
 				 * avoid the Kerberos code doing a hostname look-up.
 				 */
 				res = pg_fe_sendauth(areq, msgLength, conn);
-				conn->errorMessage.len = strlen(conn->errorMessage.data);
 
 				/* OK, we have processed the message; mark data consumed */
 				conn->inStart = conn->inCursor;
@@ -3627,15 +3602,6 @@ keep_going:						/* We will come back to here until there is
 					goto error_return;
 				}
 
-				/* Fire up post-connection housekeeping if needed */
-				if (PG_PROTOCOL_MAJOR(conn->pversion) < 3)
-				{
-					conn->status = CONNECTION_SETENV;
-					conn->setenv_state = SETENV_STATE_CLIENT_ENCODING_SEND;
-					conn->next_eo = EnvironmentOptions;
-					return PGRES_POLLING_WRITING;
-				}
-
 				/* Almost there now ... */
 				conn->status = CONNECTION_CHECK_TARGET;
 				goto keep_going;
@@ -3644,158 +3610,54 @@ keep_going:						/* We will come back to here until there is
 		case CONNECTION_CHECK_TARGET:
 			{
 				/*
-				 * If a read-write connection is required, see if we have one.
-				 *
-				 * Servers before 7.4 lack the transaction_read_only GUC, but
-				 * by the same token they don't have any read-only mode, so we
-				 * may just skip the test in that case.
+				 * If a read-write, read-only, primary, or standby connection
+				 * is required, see if we have one.
 				 */
-				if (conn->sversion >= 70400 &&
-					conn->target_session_attrs != NULL &&
-					strcmp(conn->target_session_attrs, "read-write") == 0)
+				if (conn->target_server_type == SERVER_TYPE_READ_WRITE ||
+					conn->target_server_type == SERVER_TYPE_READ_ONLY)
 				{
+					bool		read_only_server;
+
 					/*
-					 * Save existing error messages across the PQsendQuery
-					 * attempt.  This is necessary because PQsendQuery is
-					 * going to reset conn->errorMessage, so we would lose
-					 * error messages related to previous hosts we have tried
-					 * and failed to connect to.
+					 * If the server didn't report
+					 * "default_transaction_read_only" or "in_hot_standby" at
+					 * startup, we must determine its state by sending the
+					 * query "SHOW transaction_read_only".  This GUC exists in
+					 * all server versions that support 3.0 protocol.
 					 */
-					if (!saveErrorMessage(conn, &savedMessage))
-						goto error_return;
-
-					conn->status = CONNECTION_OK;
-					if (!PQsendQuery(conn,
-									 "SHOW transaction_read_only"))
+					if (conn->default_transaction_read_only == PG_BOOL_UNKNOWN ||
+						conn->in_hot_standby == PG_BOOL_UNKNOWN)
 					{
-						restoreErrorMessage(conn, &savedMessage);
-						goto error_return;
-					}
-					conn->status = CONNECTION_CHECK_WRITABLE;
-					restoreErrorMessage(conn, &savedMessage);
-					return PGRES_POLLING_READING;
-				}
-
-				/* We can release the address list now. */
-				release_conn_addrinfo(conn);
-
-				/* We are open for business! */
-				conn->status = CONNECTION_OK;
-				return PGRES_POLLING_OK;
-			}
-
-		case CONNECTION_SETENV:
-			{
-				/*
-				 * Do post-connection housekeeping (only needed in protocol
-				 * 2.0).
-				 *
-				 * We pretend that the connection is OK for the duration of
-				 * these queries.
-				 */
-				conn->status = CONNECTION_OK;
-
-				switch (pqSetenvPoll(conn))
-				{
-					case PGRES_POLLING_OK:	/* Success */
-						break;
-
-					case PGRES_POLLING_READING: /* Still going */
-						conn->status = CONNECTION_SETENV;
+						/*
+						 * We use PQsendQueryContinue so that
+						 * conn->errorMessage does not get cleared.  We need
+						 * to preserve any error messages related to previous
+						 * hosts we have tried and failed to connect to.
+						 */
+						conn->status = CONNECTION_OK;
+						if (!PQsendQueryContinue(conn,
+												 "SHOW transaction_read_only"))
+							goto error_return;
+						/* We'll return to this state when we have the answer */
+						conn->status = CONNECTION_CHECK_WRITABLE;
 						return PGRES_POLLING_READING;
+					}
 
-					case PGRES_POLLING_WRITING: /* Still going */
-						conn->status = CONNECTION_SETENV;
-						return PGRES_POLLING_WRITING;
+					/* OK, we can make the test */
+					read_only_server =
+						(conn->default_transaction_read_only == PG_BOOL_YES ||
+						 conn->in_hot_standby == PG_BOOL_YES);
 
-					default:
-						goto error_return;
-				}
-
-				/* Almost there now ... */
-				conn->status = CONNECTION_CHECK_TARGET;
-				goto keep_going;
-			}
-
-		case CONNECTION_CONSUME:
-			{
-				conn->status = CONNECTION_OK;
-				if (!PQconsumeInput(conn))
-					goto error_return;
-
-				if (PQisBusy(conn))
-				{
-					conn->status = CONNECTION_CONSUME;
-					return PGRES_POLLING_READING;
-				}
-
-				/*
-				 * Call PQgetResult() again to consume NULL result.
-				 */
-				res = PQgetResult(conn);
-				if (res != NULL)
-				{
-					PQclear(res);
-					conn->status = CONNECTION_CONSUME;
-					goto keep_going;
-				}
-
-				/* We can release the address list now. */
-				release_conn_addrinfo(conn);
-
-				/* We are open for business! */
-				conn->status = CONNECTION_OK;
-				return PGRES_POLLING_OK;
-			}
-		case CONNECTION_CHECK_WRITABLE:
-			{
-				const char *displayed_host;
-				const char *displayed_port;
-
-				if (!saveErrorMessage(conn, &savedMessage))
-					goto error_return;
-
-				conn->status = CONNECTION_OK;
-				if (!PQconsumeInput(conn))
-				{
-					restoreErrorMessage(conn, &savedMessage);
-					goto error_return;
-				}
-
-				if (PQisBusy(conn))
-				{
-					conn->status = CONNECTION_CHECK_WRITABLE;
-					restoreErrorMessage(conn, &savedMessage);
-					return PGRES_POLLING_READING;
-				}
-
-				res = PQgetResult(conn);
-				if (res && (PQresultStatus(res) == PGRES_TUPLES_OK) &&
-					PQntuples(res) == 1)
-				{
-					char	   *val;
-
-					val = PQgetvalue(res, 0, 0);
-					if (strncmp(val, "on", 2) == 0)
+					if ((conn->target_server_type == SERVER_TYPE_READ_WRITE) ?
+						read_only_server : !read_only_server)
 					{
-						/* Not writable; fail this connection. */
-						PQclear(res);
-						restoreErrorMessage(conn, &savedMessage);
-
-						/* Append error report to conn->errorMessage. */
-						if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
-							displayed_host = conn->connhost[conn->whichhost].hostaddr;
+						/* Wrong server state, reject and try the next host */
+						if (conn->target_server_type == SERVER_TYPE_READ_WRITE)
+							appendPQExpBufferStr(&conn->errorMessage,
+												 libpq_gettext("session is read-only\n"));
 						else
-							displayed_host = conn->connhost[conn->whichhost].host;
-						displayed_port = conn->connhost[conn->whichhost].port;
-						if (displayed_port == NULL || displayed_port[0] == '\0')
-							displayed_port = DEF_PGPORT_STR;
-
-						appendPQExpBuffer(&conn->errorMessage,
-										  libpq_gettext("could not make a writable "
-														"connection to server "
-														"\"%s:%s\"\n"),
-										  displayed_host, displayed_port);
+							appendPQExpBufferStr(&conn->errorMessage,
+												 libpq_gettext("session is not read-only\n"));
 
 						/* Close connection politely. */
 						conn->status = CONNECTION_OK;
@@ -3808,46 +3670,220 @@ keep_going:						/* We will come back to here until there is
 						conn->try_next_host = true;
 						goto keep_going;
 					}
+				}
+				else if (conn->target_server_type == SERVER_TYPE_PRIMARY ||
+						 conn->target_server_type == SERVER_TYPE_STANDBY ||
+						 conn->target_server_type == SERVER_TYPE_PREFER_STANDBY)
+				{
+					/*
+					 * If the server didn't report "in_hot_standby" at
+					 * startup, we must determine its state by sending the
+					 * query "SELECT pg_catalog.pg_is_in_recovery()".  Servers
+					 * before 9.0 don't have that function, but by the same
+					 * token they don't have any standby mode, so we may just
+					 * assume the result.
+					 */
+					if (conn->sversion < 90000)
+						conn->in_hot_standby = PG_BOOL_NO;
 
-					/* Session is read-write, so we're good. */
+					if (conn->in_hot_standby == PG_BOOL_UNKNOWN)
+					{
+						/*
+						 * We use PQsendQueryContinue so that
+						 * conn->errorMessage does not get cleared.  We need
+						 * to preserve any error messages related to previous
+						 * hosts we have tried and failed to connect to.
+						 */
+						conn->status = CONNECTION_OK;
+						if (!PQsendQueryContinue(conn,
+												 "SELECT pg_catalog.pg_is_in_recovery()"))
+							goto error_return;
+						/* We'll return to this state when we have the answer */
+						conn->status = CONNECTION_CHECK_STANDBY;
+						return PGRES_POLLING_READING;
+					}
+
+					/* OK, we can make the test */
+					if ((conn->target_server_type == SERVER_TYPE_PRIMARY) ?
+						(conn->in_hot_standby == PG_BOOL_YES) :
+						(conn->in_hot_standby == PG_BOOL_NO))
+					{
+						/* Wrong server state, reject and try the next host */
+						if (conn->target_server_type == SERVER_TYPE_PRIMARY)
+							appendPQExpBufferStr(&conn->errorMessage,
+												 libpq_gettext("server is in hot standby mode\n"));
+						else
+							appendPQExpBufferStr(&conn->errorMessage,
+												 libpq_gettext("server is not in hot standby mode\n"));
+
+						/* Close connection politely. */
+						conn->status = CONNECTION_OK;
+						sendTerminateConn(conn);
+
+						/*
+						 * Try next host if any, but we don't want to consider
+						 * additional addresses for this host.
+						 */
+						conn->try_next_host = true;
+						goto keep_going;
+					}
+				}
+
+				/* We can release the address list now. */
+				release_conn_addrinfo(conn);
+
+				/* We are open for business! */
+				conn->status = CONNECTION_OK;
+				return PGRES_POLLING_OK;
+			}
+
+		case CONNECTION_CONSUME:
+			{
+				/*
+				 * This state just makes sure the connection is idle after
+				 * we've obtained the result of a SHOW or SELECT query.  Once
+				 * we're clear, return to CONNECTION_CHECK_TARGET state to
+				 * decide what to do next.  We must transiently set status =
+				 * CONNECTION_OK in order to use the result-consuming
+				 * subroutines.
+				 */
+				conn->status = CONNECTION_OK;
+				if (!PQconsumeInput(conn))
+					goto error_return;
+
+				if (PQisBusy(conn))
+				{
+					conn->status = CONNECTION_CONSUME;
+					return PGRES_POLLING_READING;
+				}
+
+				/* Call PQgetResult() again until we get a NULL result */
+				res = PQgetResult(conn);
+				if (res != NULL)
+				{
 					PQclear(res);
-					termPQExpBuffer(&savedMessage);
+					conn->status = CONNECTION_CONSUME;
+					return PGRES_POLLING_READING;
+				}
+
+				conn->status = CONNECTION_CHECK_TARGET;
+				goto keep_going;
+			}
+
+		case CONNECTION_CHECK_WRITABLE:
+			{
+				/*
+				 * Waiting for result of "SHOW transaction_read_only".  We
+				 * must transiently set status = CONNECTION_OK in order to use
+				 * the result-consuming subroutines.
+				 */
+				conn->status = CONNECTION_OK;
+				if (!PQconsumeInput(conn))
+					goto error_return;
+
+				if (PQisBusy(conn))
+				{
+					conn->status = CONNECTION_CHECK_WRITABLE;
+					return PGRES_POLLING_READING;
+				}
+
+				res = PQgetResult(conn);
+				if (res && PQresultStatus(res) == PGRES_TUPLES_OK &&
+					PQntuples(res) == 1)
+				{
+					char	   *val = PQgetvalue(res, 0, 0);
 
 					/*
-					 * Finish reading any remaining messages before being
-					 * considered as ready.
+					 * "transaction_read_only = on" proves that at least one
+					 * of default_transaction_read_only and in_hot_standby is
+					 * on, but we don't actually know which.  We don't care
+					 * though for the purpose of identifying a read-only
+					 * session, so satisfy the CONNECTION_CHECK_TARGET code by
+					 * claiming they are both on.  On the other hand, if it's
+					 * a read-write session, they are certainly both off.
 					 */
+					if (strncmp(val, "on", 2) == 0)
+					{
+						conn->default_transaction_read_only = PG_BOOL_YES;
+						conn->in_hot_standby = PG_BOOL_YES;
+					}
+					else
+					{
+						conn->default_transaction_read_only = PG_BOOL_NO;
+						conn->in_hot_standby = PG_BOOL_NO;
+					}
+					PQclear(res);
+
+					/* Finish reading messages before continuing */
 					conn->status = CONNECTION_CONSUME;
 					goto keep_going;
 				}
 
-				/*
-				 * Something went wrong with "SHOW transaction_read_only". We
-				 * should try next addresses.
-				 */
+				/* Something went wrong with "SHOW transaction_read_only". */
 				if (res)
 					PQclear(res);
-				restoreErrorMessage(conn, &savedMessage);
 
 				/* Append error report to conn->errorMessage. */
-				if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
-					displayed_host = conn->connhost[conn->whichhost].hostaddr;
-				else
-					displayed_host = conn->connhost[conn->whichhost].host;
-				displayed_port = conn->connhost[conn->whichhost].port;
-				if (displayed_port == NULL || displayed_port[0] == '\0')
-					displayed_port = DEF_PGPORT_STR;
-				appendPQExpBuffer(&conn->errorMessage,
-								  libpq_gettext("test \"SHOW transaction_read_only\" failed "
-												"on server \"%s:%s\"\n"),
-								  displayed_host, displayed_port);
+				appendPQExpBufferStr(&conn->errorMessage,
+									 libpq_gettext("\"SHOW transaction_read_only\" failed\n"));
 
 				/* Close connection politely. */
 				conn->status = CONNECTION_OK;
 				sendTerminateConn(conn);
 
-				/* Try next address */
-				conn->try_next_addr = true;
+				/* Try next host. */
+				conn->try_next_host = true;
+				goto keep_going;
+			}
+
+		case CONNECTION_CHECK_STANDBY:
+			{
+				/*
+				 * Waiting for result of "SELECT pg_is_in_recovery()".  We
+				 * must transiently set status = CONNECTION_OK in order to use
+				 * the result-consuming subroutines.
+				 */
+				conn->status = CONNECTION_OK;
+				if (!PQconsumeInput(conn))
+					goto error_return;
+
+				if (PQisBusy(conn))
+				{
+					conn->status = CONNECTION_CHECK_STANDBY;
+					return PGRES_POLLING_READING;
+				}
+
+				res = PQgetResult(conn);
+				if (res && PQresultStatus(res) == PGRES_TUPLES_OK &&
+					PQntuples(res) == 1)
+				{
+					char	   *val = PQgetvalue(res, 0, 0);
+
+					if (strncmp(val, "t", 1) == 0)
+						conn->in_hot_standby = PG_BOOL_YES;
+					else
+						conn->in_hot_standby = PG_BOOL_NO;
+					PQclear(res);
+
+					/* Finish reading messages before continuing */
+					conn->status = CONNECTION_CONSUME;
+					goto keep_going;
+				}
+
+				/* Something went wrong with "SELECT pg_is_in_recovery()". */
+				if (res)
+					PQclear(res);
+
+				/* Append error report to conn->errorMessage. */
+				appendPQExpBufferStr(&conn->errorMessage,
+									 libpq_gettext("\"SELECT pg_is_in_recovery()\" failed\n"));
+
+				/* Close connection politely. */
+				conn->status = CONNECTION_OK;
+				sendTerminateConn(conn);
+
+				/* Try next host. */
+				conn->try_next_host = true;
 				goto keep_going;
 			}
 
@@ -3988,12 +4024,14 @@ makeEmptyPGconn(void)
 
 	conn->status = CONNECTION_BAD;
 	conn->asyncStatus = PGASYNC_IDLE;
+	conn->pipelineStatus = PQ_PIPELINE_OFF;
 	conn->xactStatus = PQTRANS_IDLE;
 	conn->options_valid = false;
 	conn->nonblocking = false;
-	conn->setenv_state = SETENV_STATE_IDLE;
 	conn->client_encoding = PG_SQL_ASCII;
 	conn->std_strings = false;	/* unless server says differently */
+	conn->default_transaction_read_only = PG_BOOL_UNKNOWN;
+	conn->in_hot_standby = PG_BOOL_UNKNOWN;
 	conn->verbosity = PQERRORS_DEFAULT;
 	conn->show_context = PQSHOW_CONTEXT_ERRORS;
 	conn->sock = PGINVALID_SOCKET;
@@ -4087,8 +4125,6 @@ freePGconn(PGconn *conn)
 		free(conn->pghostaddr);
 	if (conn->pgport)
 		free(conn->pgport);
-	if (conn->pgtty)
-		free(conn->pgtty);
 	if (conn->connect_timeout)
 		free(conn->connect_timeout);
 	if (conn->pgtcp_user_timeout)
@@ -4139,6 +4175,8 @@ freePGconn(PGconn *conn)
 		free(conn->sslrootcert);
 	if (conn->sslcrl)
 		free(conn->sslcrl);
+	if (conn->sslcrldir)
+		free(conn->sslcrldir);
 	if (conn->sslcompression)
 		free(conn->sslcompression);
 	if (conn->requirepeer)
@@ -4156,8 +4194,6 @@ freePGconn(PGconn *conn)
 	if (conn->connip)
 		free(conn->connip);
 	/* Note that conn->Pfdebug is not ours to close or free */
-	if (conn->last_query)
-		free(conn->last_query);
 	if (conn->write_err_msg)
 		free(conn->write_err_msg);
 	if (conn->inBuffer)
@@ -4206,7 +4242,7 @@ sendTerminateConn(PGconn *conn)
 		 * Try to send "close connection" message to backend. Ignore any
 		 * error.
 		 */
-		pqPutMsgStart('X', false, conn);
+		pqPutMsgStart('X', conn);
 		pqPutMsgEnd(conn);
 		(void) pqFlush(conn);
 	}
@@ -4238,11 +4274,15 @@ closePGconn(PGconn *conn)
 
 	/*
 	 * Close the connection, reset all transient state, flush I/O buffers.
+	 * Note that this includes clearing conn->errorMessage; we're no longer
+	 * interested in any failures associated with the old connection, and we
+	 * want a clean slate for any new connection attempt.
 	 */
 	pqDropConnection(conn, true);
 	conn->status = CONNECTION_BAD;	/* Well, not really _bad_ - just absent */
 	conn->asyncStatus = PGASYNC_IDLE;
 	conn->xactStatus = PQTRANS_IDLE;
+	conn->pipelineStatus = PQ_PIPELINE_OFF;
 	pqClearAsyncResult(conn);	/* deallocate result */
 	resetPQExpBuffer(&conn->errorMessage);
 	release_conn_addrinfo(conn);
@@ -4293,7 +4333,7 @@ PQreset(PGconn *conn)
 										  conn->events[i].passThrough))
 				{
 					conn->status = CONNECTION_BAD;
-					printfPQExpBuffer(&conn->errorMessage,
+					appendPQExpBuffer(&conn->errorMessage,
 									  libpq_gettext("PGEventProc \"%s\" failed during PGEVT_CONNRESET event\n"),
 									  conn->events[i].name);
 					break;
@@ -4353,7 +4393,7 @@ PQresetPoll(PGconn *conn)
 										  conn->events[i].passThrough))
 				{
 					conn->status = CONNECTION_BAD;
-					printfPQExpBuffer(&conn->errorMessage,
+					appendPQExpBuffer(&conn->errorMessage,
 									  libpq_gettext("PGEventProc \"%s\" failed during PGEVT_CONNRESET event\n"),
 									  conn->events[i].name);
 					return PGRES_POLLING_FAILED;
@@ -4596,16 +4636,13 @@ PQrequestCancel(PGconn *conn)
  *
  * RETURNS: STATUS_ERROR if the write fails, STATUS_OK otherwise.
  * SIDE_EFFECTS: may block.
- *
- * Note: all messages sent with this routine have a length word, whether
- * it's protocol 2.0 or 3.0.
  */
 int
 pqPacketSend(PGconn *conn, char pack_type,
 			 const void *buf, size_t buf_len)
 {
 	/* Start the message. */
-	if (pqPutMsgStart(pack_type, true, conn))
+	if (pqPutMsgStart(pack_type, conn))
 		return STATUS_ERROR;
 
 	/* Send the message body. */
@@ -4650,7 +4687,7 @@ pqPacketSend(PGconn *conn, char pack_type,
  *	2 if a connection could not be established, and
  *	3 if a fatal error occurred.
  *
- * An error message is returned in the third argument for return codes 1 and 3.
+ * An error message is appended to *errorMessage for return codes 1 and 3.
  */
 static int
 ldapServiceLookup(const char *purl, PQconninfoOption *options,
@@ -4688,7 +4725,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 	if ((url = strdup(purl)) == NULL)
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage, libpq_gettext("out of memory\n"));
 		return 3;
 	}
 
@@ -4700,7 +4737,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 	if (pg_strncasecmp(url, LDAP_URL, strlen(LDAP_URL)) != 0)
 	{
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("invalid LDAP URL \"%s\": scheme must be ldap://\n"), purl);
 		free(url);
 		return 3;
@@ -4715,7 +4752,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	p = strchr(url + strlen(LDAP_URL), '/');
 	if (p == NULL || *(p + 1) == '\0' || *(p + 1) == '?')
 	{
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("invalid LDAP URL \"%s\": missing distinguished name\n"),
 						  purl);
 		free(url);
@@ -4727,7 +4764,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* attribute */
 	if ((p = strchr(dn, '?')) == NULL || *(p + 1) == '\0' || *(p + 1) == '?')
 	{
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("invalid LDAP URL \"%s\": must have exactly one attribute\n"),
 						  purl);
 		free(url);
@@ -4739,7 +4776,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* scope */
 	if ((p = strchr(attrs[0], '?')) == NULL || *(p + 1) == '\0' || *(p + 1) == '?')
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext("invalid LDAP URL \"%s\": must have search scope (base/one/sub)\n"), purl);
+		appendPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid LDAP URL \"%s\": must have search scope (base/one/sub)\n"),
+						  purl);
 		free(url);
 		return 3;
 	}
@@ -4749,8 +4788,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* filter */
 	if ((p = strchr(scopestr, '?')) == NULL || *(p + 1) == '\0' || *(p + 1) == '?')
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("invalid LDAP URL \"%s\": no filter\n"), purl);
+		appendPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid LDAP URL \"%s\": no filter\n"),
+						  purl);
 		free(url);
 		return 3;
 	}
@@ -4770,7 +4810,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 		lport = strtol(portstr, &endptr, 10);
 		if (*portstr == '\0' || *endptr != '\0' || errno || lport < 0 || lport > 65535)
 		{
-			printfPQExpBuffer(errorMessage,
+			appendPQExpBuffer(errorMessage,
 							  libpq_gettext("invalid LDAP URL \"%s\": invalid port number\n"),
 							  purl);
 			free(url);
@@ -4782,7 +4822,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* Allow only one attribute */
 	if (strchr(attrs[0], ',') != NULL)
 	{
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("invalid LDAP URL \"%s\": must have exactly one attribute\n"),
 						  purl);
 		free(url);
@@ -4798,7 +4838,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 		scope = LDAP_SCOPE_SUBTREE;
 	else
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext("invalid LDAP URL \"%s\": must have search scope (base/one/sub)\n"), purl);
+		appendPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid LDAP URL \"%s\": must have search scope (base/one/sub)\n"),
+						  purl);
 		free(url);
 		return 3;
 	}
@@ -4806,8 +4848,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* initialize LDAP structure */
 	if ((ld = ldap_init(hostname, port)) == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("could not create LDAP structure\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("could not create LDAP structure\n"));
 		free(url);
 		return 3;
 	}
@@ -4882,7 +4924,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	{
 		if (res != NULL)
 			ldap_msgfree(res);
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("lookup on LDAP server failed: %s\n"),
 						  ldap_err2string(rc));
 		ldap_unbind(ld);
@@ -4893,9 +4935,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* complain if there was not exactly one result */
 	if ((rc = ldap_count_entries(ld, res)) != 1)
 	{
-		printfPQExpBuffer(errorMessage,
-						  rc ? libpq_gettext("more than one entry found on LDAP lookup\n")
-						  : libpq_gettext("no entry found on LDAP lookup\n"));
+		appendPQExpBufferStr(errorMessage,
+							 rc ? libpq_gettext("more than one entry found on LDAP lookup\n")
+							 : libpq_gettext("no entry found on LDAP lookup\n"));
 		ldap_msgfree(res);
 		ldap_unbind(ld);
 		free(url);
@@ -4906,8 +4948,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	if ((entry = ldap_first_entry(ld, res)) == NULL)
 	{
 		/* should never happen */
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("no entry found on LDAP lookup\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("no entry found on LDAP lookup\n"));
 		ldap_msgfree(res);
 		ldap_unbind(ld);
 		free(url);
@@ -4917,8 +4959,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* get values */
 	if ((values = ldap_get_values_len(ld, entry, attrs[0])) == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("attribute has no values on LDAP lookup\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("attribute has no values on LDAP lookup\n"));
 		ldap_msgfree(res);
 		ldap_unbind(ld);
 		free(url);
@@ -4930,8 +4972,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 	if (values[0] == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("attribute has no values on LDAP lookup\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("attribute has no values on LDAP lookup\n"));
 		ldap_value_free_len(values);
 		ldap_unbind(ld);
 		return 1;
@@ -4943,8 +4985,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 		size += values[i]->bv_len + 1;
 	if ((result = malloc(size)) == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("out of memory\n"));
 		ldap_value_free_len(values);
 		ldap_unbind(ld);
 		return 3;
@@ -4982,7 +5024,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 				}
 				else if (ld_is_nl_cr(*p))
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("missing \"=\" after \"%s\" in connection info string\n"),
 									  optname);
 					free(result);
@@ -5001,7 +5043,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 				}
 				else if (!ld_is_sp_tab(*p))
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("missing \"=\" after \"%s\" in connection info string\n"),
 									  optname);
 					free(result);
@@ -5062,8 +5104,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 						options[i].val = strdup(optval);
 						if (!options[i].val)
 						{
-							printfPQExpBuffer(errorMessage,
-											  libpq_gettext("out of memory\n"));
+							appendPQExpBufferStr(errorMessage,
+												 libpq_gettext("out of memory\n"));
 							free(result);
 							return 3;
 						}
@@ -5074,7 +5116,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 			}
 			if (!found_keyword)
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("invalid connection option \"%s\"\n"),
 								  optname);
 				free(result);
@@ -5090,8 +5132,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 	if (state == 5 || state == 6)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("unterminated quoted string in connection info string\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("unterminated quoted string in connection info string\n"));
 		return 3;
 	}
 
@@ -5171,7 +5213,7 @@ next_file:
 last_file:
 	if (!group_found)
 	{
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("definition of service \"%s\" not found\n"), service);
 		return 3;
 	}
@@ -5198,7 +5240,7 @@ parseServiceFile(const char *serviceFile,
 	f = fopen(serviceFile, "r");
 	if (f == NULL)
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext("service file \"%s\" not found\n"),
+		appendPQExpBuffer(errorMessage, libpq_gettext("service file \"%s\" not found\n"),
 						  serviceFile);
 		return 1;
 	}
@@ -5274,7 +5316,7 @@ parseServiceFile(const char *serviceFile,
 				val = strchr(line, '=');
 				if (val == NULL)
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("syntax error in service file \"%s\", line %d\n"),
 									  serviceFile,
 									  linenr);
@@ -5285,7 +5327,7 @@ parseServiceFile(const char *serviceFile,
 
 				if (strcmp(key, "service") == 0)
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("nested service specifications not supported in service file \"%s\", line %d\n"),
 									  serviceFile,
 									  linenr);
@@ -5306,8 +5348,8 @@ parseServiceFile(const char *serviceFile,
 							options[i].val = strdup(val);
 						if (!options[i].val)
 						{
-							printfPQExpBuffer(errorMessage,
-											  libpq_gettext("out of memory\n"));
+							appendPQExpBufferStr(errorMessage,
+												 libpq_gettext("out of memory\n"));
 							result = 3;
 							goto exit;
 						}
@@ -5318,7 +5360,7 @@ parseServiceFile(const char *serviceFile,
 
 				if (!found_keyword)
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("syntax error in service file \"%s\", line %d\n"),
 									  serviceFile,
 									  linenr);
@@ -5388,8 +5430,8 @@ conninfo_init(PQExpBuffer errorMessage)
 	options = (PQconninfoOption *) malloc(sizeof(PQconninfoOption) * sizeof(PQconninfoOptions) / sizeof(PQconninfoOptions[0]));
 	if (options == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("out of memory\n"));
 		return NULL;
 	}
 	opt_dest = options;
@@ -5409,7 +5451,7 @@ conninfo_init(PQExpBuffer errorMessage)
  * Connection string parser
  *
  * Returns a malloc'd PQconninfoOption array, if parsing is successful.
- * Otherwise, NULL is returned and an error message is left in errorMessage.
+ * Otherwise, NULL is returned and an error message is added to errorMessage.
  *
  * If use_defaults is true, default values are filled in (from a service file,
  * environment variables, etc).
@@ -5487,8 +5529,8 @@ conninfo_parse(const char *conninfo, PQExpBuffer errorMessage,
 	/* Need a modifiable copy of the input string */
 	if ((buf = strdup(conninfo)) == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("out of memory\n"));
 		PQconninfoFree(options);
 		return NULL;
 	}
@@ -5526,7 +5568,7 @@ conninfo_parse(const char *conninfo, PQExpBuffer errorMessage,
 		/* Check that there is a following '=' */
 		if (*cp != '=')
 		{
-			printfPQExpBuffer(errorMessage,
+			appendPQExpBuffer(errorMessage,
 							  libpq_gettext("missing \"=\" after \"%s\" in connection info string\n"),
 							  pname);
 			PQconninfoFree(options);
@@ -5575,8 +5617,8 @@ conninfo_parse(const char *conninfo, PQExpBuffer errorMessage,
 			{
 				if (*cp == '\0')
 				{
-					printfPQExpBuffer(errorMessage,
-									  libpq_gettext("unterminated quoted string in connection info string\n"));
+					appendPQExpBufferStr(errorMessage,
+										 libpq_gettext("unterminated quoted string in connection info string\n"));
 					PQconninfoFree(options);
 					free(buf);
 					return NULL;
@@ -5632,7 +5674,7 @@ conninfo_parse(const char *conninfo, PQExpBuffer errorMessage,
  *
  * If successful, a malloc'd PQconninfoOption array is returned.
  * If not successful, NULL is returned and an error message is
- * left in errorMessage.
+ * appended to errorMessage.
  * Defaults are supplied (from a service file, environment variables, etc)
  * for unspecified options, but only if use_defaults is true.
  *
@@ -5711,7 +5753,7 @@ conninfo_array_parse(const char *const *keywords, const char *const *values,
 			/* Check for invalid connection option */
 			if (option->keyword == NULL)
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("invalid connection option \"%s\"\n"),
 								  pname);
 				PQconninfoFree(options);
@@ -5743,8 +5785,8 @@ conninfo_array_parse(const char *const *keywords, const char *const *values,
 								options[k].val = strdup(str_option->val);
 								if (!options[k].val)
 								{
-									printfPQExpBuffer(errorMessage,
-													  libpq_gettext("out of memory\n"));
+									appendPQExpBufferStr(errorMessage,
+														 libpq_gettext("out of memory\n"));
 									PQconninfoFree(options);
 									PQconninfoFree(dbname_options);
 									return NULL;
@@ -5772,8 +5814,8 @@ conninfo_array_parse(const char *const *keywords, const char *const *values,
 				option->val = strdup(pvalue);
 				if (!option->val)
 				{
-					printfPQExpBuffer(errorMessage,
-									  libpq_gettext("out of memory\n"));
+					appendPQExpBufferStr(errorMessage,
+										 libpq_gettext("out of memory\n"));
 					PQconninfoFree(options);
 					PQconninfoFree(dbname_options);
 					return NULL;
@@ -5844,8 +5886,8 @@ conninfo_add_defaults(PQconninfoOption *options, PQExpBuffer errorMessage)
 				if (!option->val)
 				{
 					if (errorMessage)
-						printfPQExpBuffer(errorMessage,
-										  libpq_gettext("out of memory\n"));
+						appendPQExpBufferStr(errorMessage,
+											 libpq_gettext("out of memory\n"));
 					return false;
 				}
 				continue;
@@ -5868,8 +5910,8 @@ conninfo_add_defaults(PQconninfoOption *options, PQExpBuffer errorMessage)
 				if (!option->val)
 				{
 					if (errorMessage)
-						printfPQExpBuffer(errorMessage,
-										  libpq_gettext("out of memory\n"));
+						appendPQExpBufferStr(errorMessage,
+											 libpq_gettext("out of memory\n"));
 					return false;
 				}
 				continue;
@@ -5886,8 +5928,8 @@ conninfo_add_defaults(PQconninfoOption *options, PQExpBuffer errorMessage)
 			if (!option->val)
 			{
 				if (errorMessage)
-					printfPQExpBuffer(errorMessage,
-									  libpq_gettext("out of memory\n"));
+					appendPQExpBufferStr(errorMessage,
+										 libpq_gettext("out of memory\n"));
 				return false;
 			}
 			continue;
@@ -5987,8 +6029,8 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 	initPQExpBuffer(&portbuf);
 	if (PQExpBufferDataBroken(hostbuf) || PQExpBufferDataBroken(portbuf))
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("out of memory\n"));
 		goto cleanup;
 	}
 
@@ -5996,8 +6038,8 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 	buf = strdup(uri);
 	if (buf == NULL)
 	{
-		printfPQExpBuffer(errorMessage,
-						  libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage,
+							 libpq_gettext("out of memory\n"));
 		goto cleanup;
 	}
 	start = buf;
@@ -6007,7 +6049,7 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 	if (prefix_len == 0)
 	{
 		/* Should never happen */
-		printfPQExpBuffer(errorMessage,
+		appendPQExpBuffer(errorMessage,
 						  libpq_gettext("invalid URI propagated to internal parser routine: \"%s\"\n"),
 						  uri);
 		goto cleanup;
@@ -6084,14 +6126,14 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 				++p;
 			if (!*p)
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("end of string reached when looking for matching \"]\" in IPv6 host address in URI: \"%s\"\n"),
 								  uri);
 				goto cleanup;
 			}
 			if (p == host)
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("IPv6 host address may not be empty in URI: \"%s\"\n"),
 								  uri);
 				goto cleanup;
@@ -6106,7 +6148,7 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 			 */
 			if (*p && *p != ':' && *p != '/' && *p != '?' && *p != ',')
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("unexpected character \"%c\" at position %d in URI (expected \":\" or \"/\"): \"%s\"\n"),
 								  *p, (int) (p - buf + 1), uri);
 				goto cleanup;
@@ -6223,6 +6265,7 @@ conninfo_uri_parse_params(char *params,
 		char	   *value = NULL;
 		char	   *p = params;
 		bool		malloced = false;
+		int			oldmsglen;
 
 		/*
 		 * Scan the params string for '=' and '&', marking the end of keyword
@@ -6235,7 +6278,7 @@ conninfo_uri_parse_params(char *params,
 				/* Was there '=' already? */
 				if (value != NULL)
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("extra key/value separator \"=\" in URI query parameter: \"%s\"\n"),
 									  keyword);
 					return false;
@@ -6255,7 +6298,7 @@ conninfo_uri_parse_params(char *params,
 				/* Was there '=' at all? */
 				if (value == NULL)
 				{
-					printfPQExpBuffer(errorMessage,
+					appendPQExpBuffer(errorMessage,
 									  libpq_gettext("missing key/value separator \"=\" in URI query parameter: \"%s\"\n"),
 									  keyword);
 					return false;
@@ -6301,12 +6344,13 @@ conninfo_uri_parse_params(char *params,
 		 * otherwise.  At this point both keyword and value are not
 		 * URI-encoded.
 		 */
+		oldmsglen = errorMessage->len;
 		if (!conninfo_storeval(connOptions, keyword, value,
 							   errorMessage, true, false))
 		{
 			/* Insert generic message if conninfo_storeval didn't give one. */
-			if (errorMessage->len == 0)
-				printfPQExpBuffer(errorMessage,
+			if (errorMessage->len == oldmsglen)
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("invalid URI query parameter: \"%s\"\n"),
 								  keyword);
 			/* And fail. */
@@ -6353,7 +6397,7 @@ conninfo_uri_decode(const char *str, PQExpBuffer errorMessage)
 	buf = malloc(strlen(str) + 1);
 	if (buf == NULL)
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext("out of memory\n"));
+		appendPQExpBufferStr(errorMessage, libpq_gettext("out of memory\n"));
 		return NULL;
 	}
 	p = buf;
@@ -6380,7 +6424,7 @@ conninfo_uri_decode(const char *str, PQExpBuffer errorMessage)
 			 */
 			if (!(get_hexdigit(*q++, &hi) && get_hexdigit(*q++, &lo)))
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("invalid percent-encoded token: \"%s\"\n"),
 								  str);
 				free(buf);
@@ -6390,7 +6434,7 @@ conninfo_uri_decode(const char *str, PQExpBuffer errorMessage)
 			c = (hi << 4) | lo;
 			if (c == 0)
 			{
-				printfPQExpBuffer(errorMessage,
+				appendPQExpBuffer(errorMessage,
 								  libpq_gettext("forbidden value %%00 in percent-encoded value: \"%s\"\n"),
 								  str);
 				free(buf);
@@ -6485,7 +6529,7 @@ conninfo_storeval(PQconninfoOption *connOptions,
 	if (option == NULL)
 	{
 		if (!ignoreMissing)
-			printfPQExpBuffer(errorMessage,
+			appendPQExpBuffer(errorMessage,
 							  libpq_gettext("invalid connection option \"%s\"\n"),
 							  keyword);
 		return NULL;
@@ -6503,7 +6547,7 @@ conninfo_storeval(PQconninfoOption *connOptions,
 		value_copy = strdup(value);
 		if (value_copy == NULL)
 		{
-			printfPQExpBuffer(errorMessage, libpq_gettext("out of memory\n"));
+			appendPQExpBufferStr(errorMessage, libpq_gettext("out of memory\n"));
 			return NULL;
 		}
 	}
@@ -6550,7 +6594,10 @@ PQconninfo(PGconn *conn)
 	if (conn == NULL)
 		return NULL;
 
-	/* We don't actually report any errors here, but callees want a buffer */
+	/*
+	 * We don't actually report any errors here, but callees want a buffer,
+	 * and we prefer not to trash the conn's errorMessage.
+	 */
 	initPQExpBuffer(&errorBuf);
 	if (PQExpBufferDataBroken(errorBuf))
 		return NULL;			/* out of memory already :-( */
@@ -6697,12 +6744,16 @@ PQport(const PGconn *conn)
 	return "";
 }
 
+/*
+ * No longer does anything, but the function remains for API backwards
+ * compatibility.
+ */
 char *
 PQtty(const PGconn *conn)
 {
 	if (!conn)
 		return NULL;
-	return conn->pgtty;
+	return "";
 }
 
 char *
@@ -6800,6 +6851,15 @@ PQbackendPID(const PGconn *conn)
 	return conn->be_pid;
 }
 
+PGpipelineStatus
+PQpipelineStatus(const PGconn *conn)
+{
+	if (!conn)
+		return PQ_PIPELINE_OFF;
+
+	return conn->pipelineStatus;
+}
+
 int
 PQconnectionNeedsPassword(const PGconn *conn)
 {
@@ -6867,13 +6927,9 @@ PQsetClientEncoding(PGconn *conn, const char *encoding)
 	else
 	{
 		/*
-		 * In protocol 2 we have to assume the setting will stick, and adjust
-		 * our state immediately.  In protocol 3 and up we can rely on the
-		 * backend to report the parameter value, and we'll change state at
-		 * that time.
+		 * We rely on the backend to report the parameter value, and we'll
+		 * change state at that time.
 		 */
-		if (PG_PROTOCOL_MAJOR(conn->pversion) < 3)
-			pqSaveParameterStatus(conn, "client_encoding", encoding);
 		status = 0;				/* everything is ok */
 	}
 	PQclear(res);
@@ -7046,7 +7102,7 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 	/* 'localhost' matches pghost of '' or the default socket directory */
 	if (hostname == NULL || hostname[0] == '\0')
 		hostname = DefaultHost;
-	else if (is_absolute_path(hostname))
+	else if (is_unixsock_path(hostname))
 
 		/*
 		 * We should probably use canonicalize_path(), but then we have to

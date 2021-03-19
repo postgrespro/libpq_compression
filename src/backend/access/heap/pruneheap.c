@@ -3,7 +3,7 @@
  * pruneheap.c
  *	  heap page pruning and HOT-chain management code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -213,11 +213,12 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
  * send its own new total to pgstats, and we don't want this delta applied
  * on top of that.)
  *
+ * Sets latestRemovedXid for caller on return.
+ *
  * off_loc is the offset location required by the caller to use in error
  * callback.
  *
- * Returns the number of tuples deleted from the page and sets
- * latestRemovedXid.
+ * Returns the number of tuples deleted from the page during this call.
  */
 int
 heap_page_prune(Relation relation, Buffer buffer,

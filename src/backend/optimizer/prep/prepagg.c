@@ -22,7 +22,7 @@
  * at executor startup.  The Agg nodes are constructed much later in the
  * planning, however, so it's not trivial.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -71,7 +71,7 @@ static Datum GetAggInitVal(Datum textInitVal, Oid transtype);
  *
  * Information about the aggregates and transition functions are collected
  * in the root->agginfos and root->aggtransinfos lists.  The 'aggtranstype',
- * 'aggno', and 'aggtransno' fields in are filled in in each Aggref.
+ * 'aggno', and 'aggtransno' fields of each Aggref are filled in.
  *
  * NOTE: This modifies the Aggrefs in the input expression in-place!
  *

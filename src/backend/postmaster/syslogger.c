@@ -13,7 +13,7 @@
  *
  * Author: Andreas Pflug <pgadmin@pse-consulting.de>
  *
- * Copyright (c) 2004-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2004-2021, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -518,7 +518,7 @@ SysLoggerMain(int argc, char *argv[])
 			 * it DEBUG1 to suppress in normal use.
 			 */
 			ereport(DEBUG1,
-					(errmsg("logger shutting down")));
+					(errmsg_internal("logger shutting down")));
 
 			/*
 			 * Normal exit from the syslogger is here.  Note that we

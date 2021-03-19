@@ -4,7 +4,7 @@
  *	  utilities routines for the postgres GiST index access method.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -914,7 +914,7 @@ gistPageRecyclable(Page page)
 		 */
 		FullTransactionId deletexid_full = GistPageGetDeleteXid(page);
 
-		return GlobalVisIsRemovableFullXid(NULL, deletexid_full);
+		return GlobalVisCheckRemovableFullXid(NULL, deletexid_full);
 	}
 	return false;
 }

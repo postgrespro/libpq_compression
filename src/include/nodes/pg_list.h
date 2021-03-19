@@ -27,7 +27,7 @@
  * always be so; try to be careful to maintain the distinction.)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/pg_list.h
@@ -213,6 +213,10 @@ list_length(const List *l)
 #define list_make4(x1,x2,x3,x4) \
 	list_make4_impl(T_List, list_make_ptr_cell(x1), list_make_ptr_cell(x2), \
 					list_make_ptr_cell(x3), list_make_ptr_cell(x4))
+#define list_make5(x1,x2,x3,x4,x5) \
+	list_make5_impl(T_List, list_make_ptr_cell(x1), list_make_ptr_cell(x2), \
+					list_make_ptr_cell(x3), list_make_ptr_cell(x4), \
+					list_make_ptr_cell(x5))
 
 #define list_make1_int(x1) \
 	list_make1_impl(T_IntList, list_make_int_cell(x1))
@@ -224,6 +228,10 @@ list_length(const List *l)
 #define list_make4_int(x1,x2,x3,x4) \
 	list_make4_impl(T_IntList, list_make_int_cell(x1), list_make_int_cell(x2), \
 					list_make_int_cell(x3), list_make_int_cell(x4))
+#define list_make5_int(x1,x2,x3,x4,x5) \
+	list_make5_impl(T_IntList, list_make_int_cell(x1), list_make_int_cell(x2), \
+					list_make_int_cell(x3), list_make_int_cell(x4), \
+					list_make_int_cell(x5))
 
 #define list_make1_oid(x1) \
 	list_make1_impl(T_OidList, list_make_oid_cell(x1))
@@ -235,6 +243,10 @@ list_length(const List *l)
 #define list_make4_oid(x1,x2,x3,x4) \
 	list_make4_impl(T_OidList, list_make_oid_cell(x1), list_make_oid_cell(x2), \
 					list_make_oid_cell(x3), list_make_oid_cell(x4))
+#define list_make5_oid(x1,x2,x3,x4,x5) \
+	list_make5_impl(T_OidList, list_make_oid_cell(x1), list_make_oid_cell(x2), \
+					list_make_oid_cell(x3), list_make_oid_cell(x4), \
+					list_make_oid_cell(x5))
 
 /*
  * Locate the n'th cell (counting from 0) of the list.
@@ -520,6 +532,9 @@ extern List *list_make3_impl(NodeTag t, ListCell datum1, ListCell datum2,
 							 ListCell datum3);
 extern List *list_make4_impl(NodeTag t, ListCell datum1, ListCell datum2,
 							 ListCell datum3, ListCell datum4);
+extern List *list_make5_impl(NodeTag t, ListCell datum1, ListCell datum2,
+							 ListCell datum3, ListCell datum4,
+							 ListCell datum5);
 
 extern pg_nodiscard List *lappend(List *list, void *datum);
 extern pg_nodiscard List *lappend_int(List *list, int datum);
@@ -589,6 +604,7 @@ extern pg_nodiscard List *list_copy_deep(const List *oldlist);
 typedef int (*list_sort_comparator) (const ListCell *a, const ListCell *b);
 extern void list_sort(List *list, list_sort_comparator cmp);
 
+extern int	list_int_cmp(const ListCell *p1, const ListCell *p2);
 extern int	list_oid_cmp(const ListCell *p1, const ListCell *p2);
 
 #endif							/* PG_LIST_H */
